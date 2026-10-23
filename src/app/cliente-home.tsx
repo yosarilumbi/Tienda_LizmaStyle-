@@ -1,4 +1,3 @@
-
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
 import { useState } from 'react';
@@ -121,19 +120,6 @@ export default function ClienteHome() {
               />
             </TouchableOpacity>
           )}
-
-          <TouchableOpacity
-            style={styles.searchButton}
-            onPress={buscarProducto}
-            activeOpacity={0.8}
-            accessibilityLabel="Buscar"
-          >
-            <Ionicons
-              name="arrow-forward"
-              size={19}
-              color={BLANCO}
-            />
-          </TouchableOpacity>
         </View>
 
         {/* BANNER PRINCIPAL */}
@@ -267,7 +253,7 @@ export default function ClienteHome() {
         <View style={styles.categories}>
           <TouchableOpacity
             style={styles.categoryCard}
-            onPress={() => abrirCategoria('Ropa')}
+            onPress={() => abrirCategoria('Blusas')}
             activeOpacity={0.8}
           >
             <View style={styles.categoryIcon}>
@@ -277,12 +263,12 @@ export default function ClienteHome() {
                 color={ROSA}
               />
             </View>
-            <Text style={styles.categoryText}>Ropa</Text>
+            <Text style={styles.categoryText}>Blusas</Text>
           </TouchableOpacity>
 
           <TouchableOpacity
             style={styles.categoryCard}
-            onPress={() => abrirCategoria('Perfumenes')}
+            onPress={() => abrirCategoria('Perfumes')}
             activeOpacity={0.8}
           >
             <View style={styles.categoryIcon}>
@@ -578,15 +564,6 @@ const styles = StyleSheet.create({
     color: NEGRO,
     fontSize: 13,
     paddingVertical: 0,
-  },
-
-  searchButton: {
-    width: 39,
-    height: 39,
-    borderRadius: 13,
-    backgroundColor: ROSA,
-    alignItems: 'center',
-    justifyContent: 'center',
   },
 
   // Banner

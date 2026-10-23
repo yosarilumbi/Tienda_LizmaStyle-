@@ -1,9 +1,10 @@
+
 import { auth, db } from '@/database/firebaseConfig';
 import { supabase } from '@/database/supabase';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
+import { decode } from 'base64-arraybuffer';
 import * as ImagePicker from 'expo-image-picker';
 import { useRouter } from 'expo-router';
-
 import {
   EmailAuthProvider,
   onAuthStateChanged,
@@ -13,16 +14,8 @@ import {
   updatePassword,
   User,
 } from 'firebase/auth';
-
-import {
-  doc,
-  getDoc,
-  updateDoc,
-} from 'firebase/firestore';
-
-import { decode } from 'base64-arraybuffer';
+import { doc, getDoc, updateDoc } from 'firebase/firestore';
 import { useEffect, useState } from 'react';
-
 import {
   ActivityIndicator,
   Alert,
@@ -43,9 +36,9 @@ export default function PerfilScreen() {
   const router = useRouter();
 
   const [usuario, setUsuario] = useState<User | null>(null);
-
   const [nombre, setNombre] = useState('No registrado');
   const [correo, setCorreo] = useState('');
+  const [telefono, setTelefono] = useState('');
   const [rol, setRol] = useState('Administrador');
   const [uid, setUid] = useState('');
   const [imagenPerfil, setImagenPerfil] = useState('');
@@ -54,94 +47,69 @@ export default function PerfilScreen() {
   const [editando, setEditando] = useState(false);
   const [guardando, setGuardando] = useState(false);
   const [subiendoFoto, setSubiendoFoto] = useState(false);
+  const [cambiandoPassword, setCambiandoPassword] = useState(false);
 
   const [nombreEditado, setNombreEditado] = useState('');
   const [correoEditado, setCorreoEditado] = useState('');
+  const [telefonoEditado, setTelefonoEditado] = useState('');
 
   const [passwordActual, setPasswordActual] = useState('');
   const [passwordNueva, setPasswordNueva] = useState('');
   const [confirmarPassword, setConfirmarPassword] = useState('');
 
   const [mostrarPassword, setMostrarPassword] = useState(false);
-  const [mostrarPasswordNueva, setMostrarPasswordNueva] =
-    useState(false);
-  const [mostrarConfirmarPassword, setMostrarConfirmarPassword] =
-    useState(false);
-
-  const [cambiandoPassword, setCambiandoPassword] =
-    useState(false);
+  const [mostrarPasswordNueva, setMostrarPasswordNueva] = useState(false);
+  const [mostrarConfirmarPassword, setMostrarConfirmarPassword] = useState(false);
 
   useEffect(() => {
-    const unsubscribe = onAuthStateChanged(
-      auth,
-      async (usuarioActual) => {
-        if (!usuarioActual) {
-          setUsuario(null);
-          setLoading(false);
-          router.replace('/login');
-          return;
-        }
-
-        try {
-          setUsuario(usuarioActual);
-          setCorreo(usuarioActual.email || '');
-          setUid(usuarioActual.uid);
-
-          const userRef = doc(
-            db,
-            'usuarios',
-            usuarioActual.uid
-          );
-
-          const userSnapshot = await getDoc(userRef);
-
-          if (userSnapshot.exists()) {
-            const userData = userSnapshot.data();
-
-            const nombreUsuario =
-              userData.nombre || 'No registrado';
-
-            const correoUsuario =
-              userData.correo ||
-              usuarioActual.email ||
-              '';
-
-            setNombre(nombreUsuario);
-            setCorreo(correoUsuario);
-
-            setRol(
-              userData.rol === 'admin'
-                ? 'Administrador'
-                : userData.rol || 'Administrador'
-            );
-
-            setImagenPerfil(
-              userData.imagenPerfil || ''
-            );
-          }
-        } catch (error: any) {
-          console.log(
-            'ERROR AL CARGAR PERFIL:',
-            error
-          );
-
-          Alert.alert(
-            'Error',
-            'No se pudieron cargar los datos del perfil.'
-          );
-        } finally {
-          setLoading(false);
-        }
+    const unsubscribe = onAuthStateChanged(auth, async (usuarioActual) => {
+      if (!usuarioActual) {
+        setUsuario(null);
+        setLoading(false);
+        router.replace('/login');
+        return;
       }
-    );
+
+      try {
+        setUsuario(usuarioActual);
+        setCorreo(usuarioActual.email || '');
+        setUid(usuarioActual.uid);
+
+        const userRef = doc(db, 'usuarios', usuarioActual.uid);
+        const userSnapshot = await getDoc(userRef);
+
+        if (userSnapshot.exists()) {
+          const userData = userSnapshot.data();
+
+          setNombre(userData.nombre || 'No registrado');
+          setCorreo(userData.correo || usuarioActual.email || '');
+          setTelefono(
+            String(userData.telefono || '')
+              .replace(/[^0-9]/g, '')
+              .slice(0, 8)
+          );
+
+          setRol(
+            userData.rol === 'admin'
+              ? 'Administrador'
+              : userData.rol || 'Administrador'
+          );
+
+          setImagenPerfil(userData.imagenPerfil || '');
+        }
+      } catch (error) {
+        console.log('ERROR AL CARGAR PERFIL:', error);
+        Alert.alert('Error', 'No se pudieron cargar los datos del perfil.');
+      } finally {
+        setLoading(false);
+      }
+    });
 
     return unsubscribe;
   }, []);
 
   const seleccionarFoto = async () => {
-    if (!usuario || subiendoFoto) {
-      return;
-    }
+    if (!usuario || subiendoFoto) return;
 
     try {
       const permiso =
@@ -155,14 +123,13 @@ export default function PerfilScreen() {
         return;
       }
 
-      const resultado =
-        await ImagePicker.launchImageLibraryAsync({
-          mediaTypes: ['images'],
-          allowsEditing: true,
-          aspect: [1, 1],
-          quality: 0.8,
-          base64: true,
-        });
+      const resultado = await ImagePicker.launchImageLibraryAsync({
+        mediaTypes: ['images'],
+        allowsEditing: true,
+        aspect: [1, 1],
+        quality: 0.8,
+        base64: true,
+      });
 
       if (
         resultado.canceled ||
@@ -175,10 +142,7 @@ export default function PerfilScreen() {
       const foto = resultado.assets[0];
 
       if (!foto.base64) {
-        Alert.alert(
-          'Error',
-          'No se pudo obtener la imagen seleccionada.'
-        );
+        Alert.alert('Error', 'No se pudo obtener la imagen seleccionada.');
         return;
       }
 
@@ -187,53 +151,28 @@ export default function PerfilScreen() {
       const nombreArchivo =
         `perfil_${usuario.uid}_${Date.now()}.jpg`;
 
-      console.log(
-        'Subiendo foto de perfil:',
-        nombreArchivo
-      );
-
       const imagenBytes = decode(foto.base64);
 
-      const resultadoUpload =
-        await supabase.storage
-          .from('productos')
-          .upload(
-            nombreArchivo,
-            imagenBytes,
-            {
-              contentType: 'image/jpeg',
-              upsert: false,
-            }
-          );
+      const resultadoUpload = await supabase.storage
+        .from('productos')
+        .upload(nombreArchivo, imagenBytes, {
+          contentType: 'image/jpeg',
+          upsert: false,
+        });
 
       if (resultadoUpload.error) {
-        console.log(
-          'ERROR SUPABASE:',
-          resultadoUpload.error
-        );
-
         throw resultadoUpload.error;
       }
 
-      const resultadoUrl =
-        supabase.storage
-          .from('productos')
-          .getPublicUrl(nombreArchivo);
+      const resultadoUrl = supabase.storage
+        .from('productos')
+        .getPublicUrl(nombreArchivo);
 
-      const urlPublica =
-        resultadoUrl.data.publicUrl;
+      const urlPublica = resultadoUrl.data.publicUrl;
 
-      console.log(
-        'URL FOTO PERFIL:',
-        urlPublica
-      );
-
-      await updateDoc(
-        doc(db, 'usuarios', usuario.uid),
-        {
-          imagenPerfil: urlPublica,
-        }
-      );
+      await updateDoc(doc(db, 'usuarios', usuario.uid), {
+        imagenPerfil: urlPublica,
+      });
 
       setImagenPerfil(urlPublica);
 
@@ -242,21 +181,10 @@ export default function PerfilScreen() {
         'Tu foto de perfil se actualizó correctamente.'
       );
     } catch (error: any) {
-      console.log(
-        '========== ERROR AL SUBIR FOTO =========='
-      );
-
-      console.log('Código:', error?.code);
-      console.log('Mensaje:', error?.message);
-      console.log('Error completo:', error);
-
-      console.log(
-        '=========================================='
-      );
-
+      console.log('ERROR AL SUBIR FOTO:', error);
       Alert.alert(
         'Error',
-        'No se pudo actualizar la foto de perfil.'
+        error?.message || 'No se pudo actualizar la foto de perfil.'
       );
     } finally {
       setSubiendoFoto(false);
@@ -266,6 +194,7 @@ export default function PerfilScreen() {
   const abrirEdicion = () => {
     setNombreEditado(nombre);
     setCorreoEditado(correo);
+    setTelefonoEditado(telefono);
 
     setPasswordActual('');
     setPasswordNueva('');
@@ -279,13 +208,11 @@ export default function PerfilScreen() {
   };
 
   const cancelarEdicion = () => {
-    if (guardando || cambiandoPassword) {
-      return;
-    }
+    if (guardando || cambiandoPassword) return;
 
     setNombreEditado('');
     setCorreoEditado('');
-
+    setTelefonoEditado('');
     setPasswordActual('');
     setPasswordNueva('');
     setConfirmarPassword('');
@@ -299,53 +226,47 @@ export default function PerfilScreen() {
 
   const guardarCambios = async () => {
     if (!usuario) {
-      Alert.alert(
-        'Error',
-        'No hay un usuario autenticado.'
-      );
+      Alert.alert('Error', 'No hay un usuario autenticado.');
       return;
     }
 
-    const nuevoNombre =
-      nombreEditado.trim();
+    const nuevoNombre = nombreEditado.trim();
+    const nuevoCorreo = correoEditado.trim().toLowerCase();
 
-    const nuevoCorreo =
-      correoEditado.trim().toLowerCase();
-
+    // Validar nombre
     if (!nuevoNombre) {
-      Alert.alert(
-        'Campo requerido',
-        'Ingresa tu nombre.'
-      );
+      Alert.alert('Campo requerido', 'Ingresa tu nombre.');
       return;
     }
 
+    // Validar correo
     if (!nuevoCorreo) {
-      Alert.alert(
-        'Campo requerido',
-        'Ingresa tu correo electrónico.'
-      );
+      Alert.alert('Campo requerido', 'Ingresa tu correo electrónico.');
       return;
     }
 
-    const correoValido =
-      /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    const correoValido = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
     if (!correoValido.test(nuevoCorreo)) {
+      Alert.alert('Correo inválido', 'Ingresa un correo electrónico válido.');
+      return;
+    }
+
+    // Validar que el teléfono contenga exactamente 8 números
+    const nuevoTelefono = telefonoEditado.trim();
+
+    if (!/^[0-9]{8}$/.test(nuevoTelefono)) {
       Alert.alert(
-        'Correo inválido',
-        'Ingresa un correo electrónico válido.'
+        'Número inválido',
+        'El número de teléfono debe contener exactamente 8 dígitos numéricos.'
       );
       return;
     }
 
     const correoCambio =
-      nuevoCorreo !== correo.toLowerCase();
+      nuevoCorreo !== (usuario.email || correo).toLowerCase();
 
-    if (
-      correoCambio &&
-      !passwordActual.trim()
-    ) {
+    if (correoCambio && !passwordActual.trim()) {
       Alert.alert(
         'Contraseña requerida',
         'Para cambiar el correo electrónico debes ingresar tu contraseña actual.'
@@ -356,52 +277,31 @@ export default function PerfilScreen() {
     try {
       setGuardando(true);
 
-      console.log(
-        '========== ACTUALIZANDO PERFIL =========='
-      );
-
-      const userRef = doc(
-        db,
-        'usuarios',
-        usuario.uid
-      );
+      const userRef = doc(db, 'usuarios', usuario.uid);
 
       if (correoCambio) {
-        const credential =
-          EmailAuthProvider.credential(
-            usuario.email || correo,
-            passwordActual
-          );
-
-        await reauthenticateWithCredential(
-          usuario,
-          credential
+        const credential = EmailAuthProvider.credential(
+          usuario.email || correo,
+          passwordActual
         );
 
-        console.log(
-          'Usuario reautenticado correctamente.'
-        );
-
-        await updateEmail(
-          usuario,
-          nuevoCorreo
-        );
-
-        console.log(
-          'Correo actualizado en Firebase Authentication.'
-        );
+        await reauthenticateWithCredential(usuario, credential);
+        await updateEmail(usuario, nuevoCorreo);
       }
 
       await updateDoc(userRef, {
         nombre: nuevoNombre,
         correo: nuevoCorreo,
+        telefono: nuevoTelefono,
       });
 
       setNombre(nuevoNombre);
       setCorreo(nuevoCorreo);
+      setTelefono(nuevoTelefono);
 
       setNombreEditado('');
       setCorreoEditado('');
+      setTelefonoEditado('');
 
       setPasswordActual('');
       setPasswordNueva('');
@@ -413,57 +313,25 @@ export default function PerfilScreen() {
 
       setEditando(false);
 
-      console.log(
-        'Perfil actualizado correctamente.'
-      );
-
-      console.log(
-        '========================================'
-      );
-
       Alert.alert(
         'Perfil actualizado',
         'Tus datos se actualizaron correctamente.'
       );
     } catch (error: any) {
-      console.log(
-        '========== ERROR AL ACTUALIZAR PERFIL =========='
-      );
-
-      console.log('Código:', error?.code);
-      console.log('Mensaje:', error?.message);
-      console.log('Error completo:', error);
-
-      console.log(
-        '================================================'
-      );
+      console.log('ERROR AL ACTUALIZAR PERFIL:', error);
 
       if (
-        error?.code ===
-        'auth/wrong-password'
+        error?.code === 'auth/wrong-password' ||
+        error?.code === 'auth/invalid-credential'
       ) {
         Alert.alert(
           'Contraseña incorrecta',
-          'La contraseña actual que ingresaste no es correcta.'
+          'La contraseña actual no es correcta.'
         );
         return;
       }
 
-      if (
-        error?.code ===
-        'auth/invalid-credential'
-      ) {
-        Alert.alert(
-          'Datos incorrectos',
-          'La contraseña actual no es correcta o las credenciales ya no son válidas.'
-        );
-        return;
-      }
-
-      if (
-        error?.code ===
-        'auth/email-already-in-use'
-      ) {
+      if (error?.code === 'auth/email-already-in-use') {
         Alert.alert(
           'Correo en uso',
           'Ese correo electrónico ya está registrado en otra cuenta.'
@@ -471,32 +339,22 @@ export default function PerfilScreen() {
         return;
       }
 
-      if (
-        error?.code ===
-        'auth/invalid-email'
-      ) {
-        Alert.alert(
-          'Correo inválido',
-          'El correo electrónico ingresado no es válido.'
-        );
+      if (error?.code === 'auth/invalid-email') {
+        Alert.alert('Correo inválido', 'El correo ingresado no es válido.');
         return;
       }
 
-      if (
-        error?.code ===
-        'auth/requires-recent-login'
-      ) {
+      if (error?.code === 'auth/requires-recent-login') {
         Alert.alert(
           'Inicia sesión nuevamente',
-          'Por seguridad, debes cerrar sesión e iniciar sesión nuevamente antes de cambiar tu correo.'
+          'Por seguridad, debes iniciar sesión nuevamente antes de cambiar tu correo.'
         );
         return;
       }
 
       Alert.alert(
         'Error',
-        error?.message ||
-          'No se pudieron guardar los cambios.'
+        error?.message || 'No se pudieron guardar los cambios.'
       );
     } finally {
       setGuardando(false);
@@ -505,26 +363,17 @@ export default function PerfilScreen() {
 
   const cambiarPassword = async () => {
     if (!usuario) {
-      Alert.alert(
-        'Error',
-        'No hay un usuario autenticado.'
-      );
+      Alert.alert('Error', 'No hay un usuario autenticado.');
       return;
     }
 
     if (!passwordActual.trim()) {
-      Alert.alert(
-        'Campo requerido',
-        'Ingresa tu contraseña actual.'
-      );
+      Alert.alert('Campo requerido', 'Ingresa tu contraseña actual.');
       return;
     }
 
     if (!passwordNueva.trim()) {
-      Alert.alert(
-        'Campo requerido',
-        'Ingresa tu nueva contraseña.'
-      );
+      Alert.alert('Campo requerido', 'Ingresa tu nueva contraseña.');
       return;
     }
 
@@ -537,10 +386,7 @@ export default function PerfilScreen() {
     }
 
     if (!confirmarPassword.trim()) {
-      Alert.alert(
-        'Campo requerido',
-        'Confirma tu nueva contraseña.'
-      );
+      Alert.alert('Campo requerido', 'Confirma tu nueva contraseña.');
       return;
     }
 
@@ -563,37 +409,13 @@ export default function PerfilScreen() {
     try {
       setCambiandoPassword(true);
 
-      console.log(
-        '========== CAMBIANDO CONTRASEÑA =========='
+      const credential = EmailAuthProvider.credential(
+        usuario.email || correo,
+        passwordActual
       );
 
-      const credential =
-        EmailAuthProvider.credential(
-          usuario.email || correo,
-          passwordActual
-        );
-
-      await reauthenticateWithCredential(
-        usuario,
-        credential
-      );
-
-      console.log(
-        'Usuario reautenticado correctamente.'
-      );
-
-      await updatePassword(
-        usuario,
-        passwordNueva
-      );
-
-      console.log(
-        'Contraseña actualizada correctamente.'
-      );
-
-      console.log(
-        '=========================================='
-      );
+      await reauthenticateWithCredential(usuario, credential);
+      await updatePassword(usuario, passwordNueva);
 
       setPasswordActual('');
       setPasswordNueva('');
@@ -608,23 +430,11 @@ export default function PerfilScreen() {
         'Tu contraseña se cambió correctamente.'
       );
     } catch (error: any) {
-      console.log(
-        '========== ERROR AL CAMBIAR CONTRASEÑA =========='
-      );
-
-      console.log('Código:', error?.code);
-      console.log('Mensaje:', error?.message);
-      console.log('Error completo:', error);
-
-      console.log(
-        '================================================='
-      );
+      console.log('ERROR AL CAMBIAR CONTRASEÑA:', error);
 
       if (
-        error?.code ===
-          'auth/wrong-password' ||
-        error?.code ===
-          'auth/invalid-credential'
+        error?.code === 'auth/wrong-password' ||
+        error?.code === 'auth/invalid-credential'
       ) {
         Alert.alert(
           'Contraseña incorrecta',
@@ -633,21 +443,15 @@ export default function PerfilScreen() {
         return;
       }
 
-      if (
-        error?.code ===
-        'auth/requires-recent-login'
-      ) {
+      if (error?.code === 'auth/requires-recent-login') {
         Alert.alert(
           'Inicia sesión nuevamente',
-          'Por seguridad, debes cerrar sesión e iniciar sesión nuevamente antes de cambiar tu contraseña.'
+          'Por seguridad, debes iniciar sesión nuevamente antes de cambiar tu contraseña.'
         );
         return;
       }
 
-      if (
-        error?.code ===
-        'auth/weak-password'
-      ) {
+      if (error?.code === 'auth/weak-password') {
         Alert.alert(
           'Contraseña débil',
           'La nueva contraseña debe tener al menos 6 caracteres.'
@@ -657,8 +461,7 @@ export default function PerfilScreen() {
 
       Alert.alert(
         'Error',
-        error?.message ||
-          'No se pudo cambiar la contraseña.'
+        error?.message || 'No se pudo cambiar la contraseña.'
       );
     } finally {
       setCambiandoPassword(false);
@@ -682,15 +485,8 @@ export default function PerfilScreen() {
               await signOut(auth);
               router.replace('/login');
             } catch (error) {
-              console.log(
-                'ERROR AL CERRAR SESIÓN:',
-                error
-              );
-
-              Alert.alert(
-                'Error',
-                'No se pudo cerrar la sesión.'
-              );
+              console.log('ERROR AL CERRAR SESIÓN:', error);
+              Alert.alert('Error', 'No se pudo cerrar la sesión.');
             }
           },
         },
@@ -698,23 +494,60 @@ export default function PerfilScreen() {
     );
   };
 
+  const campoPassword = (
+    etiqueta: string,
+    valor: string,
+    cambiarValor: (texto: string) => void,
+    placeholder: string,
+    visible: boolean,
+    cambiarVisible: (valor: boolean) => void,
+    icono: string
+  ) => (
+    <>
+      {etiqueta ? (
+        <Text style={styles.inputLabel}>{etiqueta}</Text>
+      ) : null}
+
+      <View style={styles.inputContainer}>
+        <MaterialCommunityIcons
+          name={icono as any}
+          size={23}
+          color="#D94F8A"
+        />
+
+        <TextInput
+          style={styles.textInput}
+          value={valor}
+          onChangeText={cambiarValor}
+          placeholder={placeholder}
+          placeholderTextColor="#999999"
+          secureTextEntry={!visible}
+          editable={!guardando && !cambiandoPassword}
+          autoCapitalize="none"
+        />
+
+        <TouchableOpacity
+          onPress={() => cambiarVisible(!visible)}
+          disabled={guardando || cambiandoPassword}
+        >
+          <MaterialCommunityIcons
+            name={visible ? 'eye-off-outline' : 'eye-outline'}
+            size={23}
+            color="#777777"
+          />
+        </TouchableOpacity>
+      </View>
+    </>
+  );
+
   if (loading) {
     return (
       <SafeAreaView style={styles.container}>
-        <StatusBar
-          barStyle="dark-content"
-          backgroundColor="#FCE4EC"
-        />
+        <StatusBar barStyle="dark-content" backgroundColor="#FCE4EC" />
 
         <View style={styles.loadingContainer}>
-          <ActivityIndicator
-            size="large"
-            color="#D94F8A"
-          />
-
-          <Text style={styles.loadingText}>
-            Cargando perfil...
-          </Text>
+          <ActivityIndicator size="large" color="#D94F8A" />
+          <Text style={styles.loadingText}>Cargando perfil...</Text>
         </View>
       </SafeAreaView>
     );
@@ -723,33 +556,21 @@ export default function PerfilScreen() {
   if (editando) {
     return (
       <SafeAreaView style={styles.container}>
-        <StatusBar
-          barStyle="dark-content"
-          backgroundColor="#FCE4EC"
-        />
+        <StatusBar barStyle="dark-content" backgroundColor="#FCE4EC" />
 
         <KeyboardAvoidingView
           style={{ flex: 1 }}
-          behavior={
-            Platform.OS === 'ios'
-              ? 'padding'
-              : undefined
-          }
+          behavior={Platform.OS === 'ios' ? 'padding' : undefined}
         >
           <ScrollView
-            contentContainerStyle={
-              styles.scrollContent
-            }
+            contentContainerStyle={styles.scrollContent}
             showsVerticalScrollIndicator={false}
             keyboardShouldPersistTaps="handled"
           >
             <TouchableOpacity
               style={styles.backButton}
               onPress={cancelarEdicion}
-              disabled={
-                guardando ||
-                cambiandoPassword
-              }
+              disabled={guardando || cambiandoPassword}
             >
               <MaterialCommunityIcons
                 name="arrow-left"
@@ -767,9 +588,7 @@ export default function PerfilScreen() {
               >
                 {imagenPerfil ? (
                   <Image
-                    source={{
-                      uri: imagenPerfil,
-                    }}
+                    source={{ uri: imagenPerfil }}
                     style={styles.profileImage}
                   />
                 ) : (
@@ -780,14 +599,9 @@ export default function PerfilScreen() {
                   />
                 )}
 
-                <View
-                  style={styles.cameraButton}
-                >
+                <View style={styles.cameraButton}>
                   {subiendoFoto ? (
-                    <ActivityIndicator
-                      size="small"
-                      color="#FFFFFF"
-                    />
+                    <ActivityIndicator size="small" color="#FFFFFF" />
                   ) : (
                     <MaterialCommunityIcons
                       name="camera"
@@ -798,19 +612,14 @@ export default function PerfilScreen() {
                 </View>
               </TouchableOpacity>
 
-              <Text style={styles.title}>
-                Editar Perfil
-              </Text>
-
+              <Text style={styles.title}>Editar Perfil</Text>
               <Text style={styles.subtitle}>
                 Toca la foto para cambiarla
               </Text>
             </View>
 
             <View style={styles.editCard}>
-              <Text style={styles.inputLabel}>
-                Nombre
-              </Text>
+              <Text style={styles.inputLabel}>Nombre</Text>
 
               <View style={styles.inputContainer}>
                 <MaterialCommunityIcons
@@ -818,26 +627,18 @@ export default function PerfilScreen() {
                   size={23}
                   color="#D94F8A"
                 />
-
                 <TextInput
                   style={styles.textInput}
                   value={nombreEditado}
-                  onChangeText={
-                    setNombreEditado
-                  }
+                  onChangeText={setNombreEditado}
                   placeholder="Ingresa tu nombre"
                   placeholderTextColor="#999999"
-                  editable={
-                    !guardando &&
-                    !cambiandoPassword
-                  }
+                  editable={!guardando && !cambiandoPassword}
                   autoCapitalize="words"
                 />
               </View>
 
-              <Text style={styles.inputLabel}>
-                Correo electrónico
-              </Text>
+              <Text style={styles.inputLabel}>Correo electrónico</Text>
 
               <View style={styles.inputContainer}>
                 <MaterialCommunityIcons
@@ -845,193 +646,96 @@ export default function PerfilScreen() {
                   size={23}
                   color="#D94F8A"
                 />
-
                 <TextInput
                   style={styles.textInput}
                   value={correoEditado}
-                  onChangeText={
-                    setCorreoEditado
-                  }
+                  onChangeText={setCorreoEditado}
                   placeholder="Ingresa tu correo"
                   placeholderTextColor="#999999"
                   keyboardType="email-address"
                   autoCapitalize="none"
-                  editable={
-                    !guardando &&
-                    !cambiandoPassword
-                  }
+                  editable={!guardando && !cambiandoPassword}
                 />
               </View>
 
-              <Text style={styles.inputLabel}>
-                Contraseña actual
-              </Text>
+              <Text style={styles.inputLabel}>Número de teléfono</Text>
 
               <View style={styles.inputContainer}>
                 <MaterialCommunityIcons
-                  name="lock-outline"
+                  name="phone-outline"
                   size={23}
                   color="#D94F8A"
                 />
-
                 <TextInput
                   style={styles.textInput}
-                  value={passwordActual}
-                  onChangeText={
-                    setPasswordActual
-                  }
-                  placeholder="Contraseña actual"
+                  value={telefonoEditado}
+                  onChangeText={(texto) => {
+                    setTelefonoEditado(
+                      texto.replace(/[^0-9]/g, '').slice(0, 8)
+                    );
+                  }}
+                  placeholder="Ingresa 8 dígitos"
                   placeholderTextColor="#999999"
-                  secureTextEntry={
-                    !mostrarPassword
-                  }
-                  editable={
-                    !guardando &&
-                    !cambiandoPassword
-                  }
+                  keyboardType="number-pad"
+                  maxLength={8}
+                  editable={!guardando && !cambiandoPassword}
                 />
-
-                <TouchableOpacity
-                  onPress={() =>
-                    setMostrarPassword(
-                      !mostrarPassword
-                    )
-                  }
-                >
-                  <MaterialCommunityIcons
-                    name={
-                      mostrarPassword
-                        ? 'eye-off-outline'
-                        : 'eye-outline'
-                    }
-                    size={23}
-                    color="#777777"
-                  />
-                </TouchableOpacity>
               </View>
 
               <Text style={styles.passwordHelp}>
-                La contraseña actual es necesaria
-                para cambiar tu correo o contraseña.
+                El número debe contener exactamente 8 dígitos.
               </Text>
 
-              <Text style={styles.inputLabel}>
-                Nueva contraseña
-              </Text>
-
-              <View style={styles.inputContainer}>
-                <MaterialCommunityIcons
-                  name="lock-plus-outline"
-                  size={23}
-                  color="#D94F8A"
-                />
-
-                <TextInput
-                  style={styles.textInput}
-                  value={passwordNueva}
-                  onChangeText={
-                    setPasswordNueva
-                  }
-                  placeholder="Ingresa tu nueva contraseña"
-                  placeholderTextColor="#999999"
-                  secureTextEntry={
-                    !mostrarPasswordNueva
-                  }
-                  editable={
-                    !guardando &&
-                    !cambiandoPassword
-                  }
-                />
-
-                <TouchableOpacity
-                  onPress={() =>
-                    setMostrarPasswordNueva(
-                      !mostrarPasswordNueva
-                    )
-                  }
-                >
-                  <MaterialCommunityIcons
-                    name={
-                      mostrarPasswordNueva
-                        ? 'eye-off-outline'
-                        : 'eye-outline'
-                    }
-                    size={23}
-                    color="#777777"
-                  />
-                </TouchableOpacity>
-              </View>
-
-              <Text style={styles.inputLabel}>
-                Confirmar nueva contraseña
-              </Text>
-
-              <View style={styles.inputContainer}>
-                <MaterialCommunityIcons
-                  name="lock-check-outline"
-                  size={23}
-                  color="#D94F8A"
-                />
-
-                <TextInput
-                  style={styles.textInput}
-                  value={confirmarPassword}
-                  onChangeText={
-                    setConfirmarPassword
-                  }
-                  placeholder="Confirma tu nueva contraseña"
-                  placeholderTextColor="#999999"
-                  secureTextEntry={
-                    !mostrarConfirmarPassword
-                  }
-                  editable={
-                    !guardando &&
-                    !cambiandoPassword
-                  }
-                />
-
-                <TouchableOpacity
-                  onPress={() =>
-                    setMostrarConfirmarPassword(
-                      !mostrarConfirmarPassword
-                    )
-                  }
-                >
-                  <MaterialCommunityIcons
-                    name={
-                      mostrarConfirmarPassword
-                        ? 'eye-off-outline'
-                        : 'eye-outline'
-                    }
-                    size={23}
-                    color="#777777"
-                  />
-                </TouchableOpacity>
-              </View>
+              {campoPassword(
+                '',
+                passwordActual,
+                setPasswordActual,
+                'Contraseña actual',
+                mostrarPassword,
+                setMostrarPassword,
+                'lock-outline'
+              )}
 
               <Text style={styles.passwordHelp}>
-                La nueva contraseña debe tener al
-                menos 6 caracteres.
+                La contraseña actual es necesaria para cambiar tu correo
+                o contraseña.
+              </Text>
+
+              {campoPassword(
+                'Nueva contraseña',
+                passwordNueva,
+                setPasswordNueva,
+                'Ingresa tu nueva contraseña',
+                mostrarPasswordNueva,
+                setMostrarPasswordNueva,
+                'lock-plus-outline'
+              )}
+
+              {campoPassword(
+                'Confirmar nueva contraseña',
+                confirmarPassword,
+                setConfirmarPassword,
+                'Confirma tu nueva contraseña',
+                mostrarConfirmarPassword,
+                setMostrarConfirmarPassword,
+                'lock-check-outline'
+              )}
+
+              <Text style={styles.passwordHelp}>
+                La nueva contraseña debe tener al menos 6 caracteres.
               </Text>
 
               <TouchableOpacity
                 style={[
                   styles.passwordButton,
-                  cambiandoPassword &&
-                    styles.disabledButton,
+                  cambiandoPassword && styles.disabledButton,
                 ]}
                 activeOpacity={0.8}
                 onPress={cambiarPassword}
-                disabled={
-                  cambiandoPassword ||
-                  guardando
-                }
+                disabled={cambiandoPassword || guardando}
               >
                 {cambiandoPassword ? (
-                  <ActivityIndicator
-                    size="small"
-                    color="#FFFFFF"
-                  />
+                  <ActivityIndicator size="small" color="#FFFFFF" />
                 ) : (
                   <>
                     <MaterialCommunityIcons
@@ -1039,21 +743,14 @@ export default function PerfilScreen() {
                       size={23}
                       color="#FFFFFF"
                     />
-
-                    <Text
-                      style={
-                        styles.saveButtonText
-                      }
-                    >
+                    <Text style={styles.saveButtonText}>
                       Cambiar contraseña
                     </Text>
                   </>
                 )}
               </TouchableOpacity>
 
-              <Text style={styles.inputLabel}>
-                Rol
-              </Text>
+              <Text style={styles.inputLabel}>Rol</Text>
 
               <View
                 style={[
@@ -1066,13 +763,7 @@ export default function PerfilScreen() {
                   size={23}
                   color="#999999"
                 />
-
-                <Text
-                  style={styles.disabledText}
-                >
-                  Administrador
-                </Text>
-
+                <Text style={styles.disabledText}>{rol}</Text>
                 <MaterialCommunityIcons
                   name="lock-outline"
                   size={20}
@@ -1083,21 +774,14 @@ export default function PerfilScreen() {
               <TouchableOpacity
                 style={[
                   styles.saveButton,
-                  guardando &&
-                    styles.disabledButton,
+                  guardando && styles.disabledButton,
                 ]}
                 activeOpacity={0.8}
                 onPress={guardarCambios}
-                disabled={
-                  guardando ||
-                  cambiandoPassword
-                }
+                disabled={guardando || cambiandoPassword}
               >
                 {guardando ? (
-                  <ActivityIndicator
-                    size="small"
-                    color="#FFFFFF"
-                  />
+                  <ActivityIndicator size="small" color="#FFFFFF" />
                 ) : (
                   <>
                     <MaterialCommunityIcons
@@ -1105,12 +789,7 @@ export default function PerfilScreen() {
                       size={23}
                       color="#FFFFFF"
                     />
-
-                    <Text
-                      style={
-                        styles.saveButtonText
-                      }
-                    >
+                    <Text style={styles.saveButtonText}>
                       Guardar cambios
                     </Text>
                   </>
@@ -1121,18 +800,9 @@ export default function PerfilScreen() {
                 style={styles.cancelButton}
                 activeOpacity={0.8}
                 onPress={cancelarEdicion}
-                disabled={
-                  guardando ||
-                  cambiandoPassword
-                }
+                disabled={guardando || cambiandoPassword}
               >
-                <Text
-                  style={
-                    styles.cancelButtonText
-                  }
-                >
-                  Cancelar
-                </Text>
+                <Text style={styles.cancelButtonText}>Cancelar</Text>
               </TouchableOpacity>
             </View>
           </ScrollView>
@@ -1143,10 +813,7 @@ export default function PerfilScreen() {
 
   return (
     <SafeAreaView style={styles.container}>
-      <StatusBar
-        barStyle="dark-content"
-        backgroundColor="#FCE4EC"
-      />
+      <StatusBar barStyle="dark-content" backgroundColor="#FCE4EC" />
 
       <ScrollView
         contentContainerStyle={styles.scrollContent}
@@ -1172,9 +839,7 @@ export default function PerfilScreen() {
           >
             {imagenPerfil ? (
               <Image
-                source={{
-                  uri: imagenPerfil,
-                }}
+                source={{ uri: imagenPerfil }}
                 style={styles.profileImage}
               />
             ) : (
@@ -1185,14 +850,9 @@ export default function PerfilScreen() {
               />
             )}
 
-            <View
-              style={styles.cameraButton}
-            >
+            <View style={styles.cameraButton}>
               {subiendoFoto ? (
-                <ActivityIndicator
-                  size="small"
-                  color="#FFFFFF"
-                />
+                <ActivityIndicator size="small" color="#FFFFFF" />
               ) : (
                 <MaterialCommunityIcons
                   name="camera"
@@ -1203,13 +863,8 @@ export default function PerfilScreen() {
             </View>
           </TouchableOpacity>
 
-          <Text style={styles.title}>
-            Mi Perfil
-          </Text>
-
-          <Text style={styles.subtitle}>
-            Información de tu cuenta
-          </Text>
+          <Text style={styles.title}>Mi Perfil</Text>
+          <Text style={styles.subtitle}>Información de tu cuenta</Text>
         </View>
 
         <View style={styles.card}>
@@ -1221,15 +876,9 @@ export default function PerfilScreen() {
                 color="#D94F8A"
               />
             </View>
-
             <View style={styles.dataContent}>
-              <Text style={styles.label}>
-                Nombre
-              </Text>
-
-              <Text style={styles.value}>
-                {nombre}
-              </Text>
+              <Text style={styles.label}>Nombre</Text>
+              <Text style={styles.value}>{nombre}</Text>
             </View>
           </View>
 
@@ -1241,14 +890,24 @@ export default function PerfilScreen() {
                 color="#D94F8A"
               />
             </View>
-
             <View style={styles.dataContent}>
-              <Text style={styles.label}>
-                Correo electrónico
-              </Text>
+              <Text style={styles.label}>Correo electrónico</Text>
+              <Text style={styles.value}>{correo || 'No registrado'}</Text>
+            </View>
+          </View>
 
+          <View style={styles.dataRow}>
+            <View style={styles.iconContainer}>
+              <MaterialCommunityIcons
+                name="phone-outline"
+                size={24}
+                color="#D94F8A"
+              />
+            </View>
+            <View style={styles.dataContent}>
+              <Text style={styles.label}>Número de teléfono</Text>
               <Text style={styles.value}>
-                {correo || 'No registrado'}
+                {telefono || 'No registrado'}
               </Text>
             </View>
           </View>
@@ -1261,15 +920,9 @@ export default function PerfilScreen() {
                 color="#D94F8A"
               />
             </View>
-
             <View style={styles.dataContent}>
-              <Text style={styles.label}>
-                Rol
-              </Text>
-
-              <Text style={styles.value}>
-                {rol}
-              </Text>
+              <Text style={styles.label}>Rol</Text>
+              <Text style={styles.value}>{rol}</Text>
             </View>
           </View>
 
@@ -1281,16 +934,9 @@ export default function PerfilScreen() {
                 color="#D94F8A"
               />
             </View>
-
             <View style={styles.dataContent}>
-              <Text style={styles.label}>
-                ID de usuario
-              </Text>
-
-              <Text
-                style={styles.uid}
-                selectable
-              >
+              <Text style={styles.label}>ID de usuario</Text>
+              <Text style={styles.uid} selectable>
                 {uid}
               </Text>
             </View>
@@ -1307,10 +953,7 @@ export default function PerfilScreen() {
             size={22}
             color="#FFFFFF"
           />
-
-          <Text style={styles.editButtonText}>
-            Editar perfil
-          </Text>
+          <Text style={styles.editButtonText}>Editar perfil</Text>
         </TouchableOpacity>
 
         <TouchableOpacity
@@ -1323,10 +966,7 @@ export default function PerfilScreen() {
             size={22}
             color="#FFFFFF"
           />
-
-          <Text style={styles.logoutText}>
-            Cerrar sesión
-          </Text>
+          <Text style={styles.logoutText}>Cerrar sesión</Text>
         </TouchableOpacity>
       </ScrollView>
     </SafeAreaView>
@@ -1338,26 +978,22 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: '#FCE4EC',
   },
-
   scrollContent: {
     flexGrow: 1,
     paddingHorizontal: 25,
     paddingTop: 10,
     paddingBottom: 30,
   },
-
   backButton: {
     marginTop: 10,
     marginBottom: 15,
     padding: 5,
     alignSelf: 'flex-start',
   },
-
   header: {
     alignItems: 'center',
     marginBottom: 25,
   },
-
   profileIcon: {
     width: 100,
     height: 100,
@@ -1368,21 +1004,16 @@ const styles = StyleSheet.create({
     marginBottom: 15,
     elevation: 4,
     shadowColor: '#000',
-    shadowOffset: {
-      width: 0,
-      height: 2,
-    },
+    shadowOffset: { width: 0, height: 2 },
     shadowOpacity: 0.15,
     shadowRadius: 4,
     position: 'relative',
   },
-
   profileImage: {
     width: 100,
     height: 100,
     borderRadius: 50,
   },
-
   cameraButton: {
     position: 'absolute',
     right: -2,
@@ -1396,34 +1027,27 @@ const styles = StyleSheet.create({
     borderWidth: 3,
     borderColor: '#FCE4EC',
   },
-
   title: {
     fontSize: 28,
     fontWeight: 'bold',
     color: '#000000',
   },
-
   subtitle: {
     fontSize: 14,
     color: '#555555',
     marginTop: 5,
     textAlign: 'center',
   },
-
   card: {
     backgroundColor: '#FFFFFF',
     borderRadius: 18,
     padding: 20,
     elevation: 3,
     shadowColor: '#000',
-    shadowOffset: {
-      width: 0,
-      height: 2,
-    },
+    shadowOffset: { width: 0, height: 2 },
     shadowOpacity: 0.1,
     shadowRadius: 5,
   },
-
   dataRow: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -1431,7 +1055,6 @@ const styles = StyleSheet.create({
     borderBottomWidth: 1,
     borderBottomColor: '#EEEEEE',
   },
-
   iconContainer: {
     width: 45,
     height: 45,
@@ -1441,28 +1064,23 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     marginRight: 15,
   },
-
   dataContent: {
     flex: 1,
   },
-
   label: {
     fontSize: 13,
     color: '#777777',
     marginBottom: 4,
   },
-
   value: {
     fontSize: 16,
     fontWeight: '600',
     color: '#000000',
   },
-
   uid: {
     fontSize: 12,
     color: '#333333',
   },
-
   editButton: {
     flexDirection: 'row',
     backgroundColor: '#D94F8A',
@@ -1473,21 +1091,16 @@ const styles = StyleSheet.create({
     marginTop: 25,
     elevation: 3,
     shadowColor: '#D94F8A',
-    shadowOffset: {
-      width: 0,
-      height: 3,
-    },
+    shadowOffset: { width: 0, height: 3 },
     shadowOpacity: 0.3,
     shadowRadius: 5,
   },
-
   editButtonText: {
     color: '#FFFFFF',
     fontSize: 17,
     fontWeight: 'bold',
     marginLeft: 10,
   },
-
   logoutButton: {
     flexDirection: 'row',
     backgroundColor: '#D94F8A',
@@ -1498,35 +1111,26 @@ const styles = StyleSheet.create({
     marginTop: 15,
     elevation: 3,
     shadowColor: '#D94F8A',
-    shadowOffset: {
-      width: 0,
-      height: 3,
-    },
+    shadowOffset: { width: 0, height: 3 },
     shadowOpacity: 0.3,
     shadowRadius: 5,
   },
-
   logoutText: {
     color: '#FFFFFF',
     fontSize: 17,
     fontWeight: 'bold',
     marginLeft: 10,
   },
-
   editCard: {
     backgroundColor: '#FFFFFF',
     borderRadius: 18,
     padding: 20,
     elevation: 3,
     shadowColor: '#000',
-    shadowOffset: {
-      width: 0,
-      height: 2,
-    },
+    shadowOffset: { width: 0, height: 2 },
     shadowOpacity: 0.1,
     shadowRadius: 5,
   },
-
   inputLabel: {
     fontSize: 14,
     fontWeight: '600',
@@ -1534,7 +1138,6 @@ const styles = StyleSheet.create({
     marginBottom: 8,
     marginTop: 5,
   },
-
   inputContainer: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -1546,7 +1149,6 @@ const styles = StyleSheet.create({
     paddingHorizontal: 14,
     marginBottom: 18,
   },
-
   textInput: {
     flex: 1,
     fontSize: 16,
@@ -1554,18 +1156,15 @@ const styles = StyleSheet.create({
     marginLeft: 10,
     paddingVertical: 10,
   },
-
   disabledInput: {
     backgroundColor: '#F1F1F1',
   },
-
   disabledText: {
     flex: 1,
     fontSize: 16,
     color: '#777777',
     marginLeft: 10,
   },
-
   passwordHelp: {
     fontSize: 12,
     color: '#777777',
@@ -1573,7 +1172,6 @@ const styles = StyleSheet.create({
     marginBottom: 15,
     lineHeight: 17,
   },
-
   saveButton: {
     flexDirection: 'row',
     backgroundColor: '#D94F8A',
@@ -1584,14 +1182,10 @@ const styles = StyleSheet.create({
     marginTop: 8,
     elevation: 3,
     shadowColor: '#D94F8A',
-    shadowOffset: {
-      width: 0,
-      height: 3,
-    },
+    shadowOffset: { width: 0, height: 3 },
     shadowOpacity: 0.3,
     shadowRadius: 5,
   },
-
   passwordButton: {
     flexDirection: 'row',
     backgroundColor: '#D94F8A',
@@ -1603,21 +1197,16 @@ const styles = StyleSheet.create({
     marginBottom: 18,
     elevation: 3,
     shadowColor: '#D94F8A',
-    shadowOffset: {
-      width: 0,
-      height: 3,
-    },
+    shadowOffset: { width: 0, height: 3 },
     shadowOpacity: 0.3,
     shadowRadius: 5,
   },
-
   saveButtonText: {
     color: '#FFFFFF',
     fontSize: 17,
     fontWeight: 'bold',
     marginLeft: 10,
   },
-
   cancelButton: {
     height: 50,
     borderRadius: 14,
@@ -1627,23 +1216,19 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: '#D94F8A',
   },
-
   cancelButtonText: {
     color: '#D94F8A',
     fontSize: 16,
     fontWeight: 'bold',
   },
-
   disabledButton: {
     opacity: 0.7,
   },
-
   loadingContainer: {
     flex: 1,
     justifyContent: 'center',
     alignItems: 'center',
   },
-
   loadingText: {
     marginTop: 12,
     fontSize: 15,

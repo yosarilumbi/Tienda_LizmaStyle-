@@ -1,3 +1,4 @@
+
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { decode } from 'base64-arraybuffer';
 import * as ImagePicker from 'expo-image-picker';
@@ -36,6 +37,9 @@ interface VarianteProducto {
   talla: string;
   color: string;
   stock: number;
+  imagenUrl?: string;
+  imagenUri?: string;
+  imagenBase64?: string;
 }
 
 interface Producto {
@@ -54,7 +58,7 @@ interface Producto {
   variantes?: VarianteProducto[];
 }
 
-const CATEGORIAS_PREDEFINIDAS = [
+const CATEGORIAS_INICIALES = [
   'Camisetas',
   'Pantalones',
   'Vestidos',
@@ -79,240 +83,210 @@ const CATEGORIAS_CON_TALLA = [
 const normalizarCategoria = (valor: string) =>
   valor.trim().toLocaleLowerCase('es');
 
-export default function Productos() {
+const esCategoriaConTalla = (categoria: string) =>
+  CATEGORIAS_CON_TALLA.includes(normalizarCategoria(categoria));
+
+const esCartera = (categoria: string) =>
+  normalizarCategoria(categoria) === 'carteras';
+
+// Acepta letras, espacios y signos habituales en nombres y marcas.
+// Rechaza números, emojis y símbolos que no corresponden.
+const validarNombre = (valor: string) =>
+  /^[\p{L}\p{M}]+(?:[ .'-][\p{L}\p{M}]+)*$/u.test(valor.trim());
+
+// Los códigos admiten letras, números y guiones.
+// Ejemplos válidos: VES-001, PERFUME01, ZAP-38.
+const validarCodigo = (valor: string) =>
+  /^[A-Z0-9]+(?:-[A-Z0-9]+)*$/.test(valor.trim().toUpperCase());
+
+// Permite nombres de marcas con números, como marcas comerciales.
+const validarMarca = (valor: string) =>
+  /^[\p{L}\p{M}0-9]+(?:[ .&'-][\p{L}\p{M}0-9]+)*$/u.test(
+    valor.trim(),
+  );
+
+// Evita letras, signos, valores negativos y más de dos decimales.
+const limpiarDecimal = (valor: string) => {
+  let resultado = valor.replace(',', '.').replace(/[^\d.]/g, '');
+  const partes = resultado.split('.');
+
+  if (partes.length > 2) {
+    resultado = `${partes[0]}.${partes.slice(1).join('')}`;
+  }
+
+  const [entero = '', decimal] = resultado.split('.');
+  return decimal !== undefined
+    ? `${entero}.${decimal.slice(0, 2)}`
+    : entero;
+};
+
+// El stock solo acepta números enteros.
+const limpiarEntero = (valor: string) =>
+  valor.replace(/\D/g, '');
+
+const validarTextoCategoria = (valor: string) =>
+  /^[\p{L}\p{M}0-9]+(?:[ &'-][\p{L}\p{M}0-9]+)*$/u.test(
+    valor.trim(),
+  );
+
+// Formato visual: coma para miles y punto para decimales.
+const formatoCantidad = (valor: number | string) =>
+  Number(valor || 0).toLocaleString('en-US', {
+    maximumFractionDigits: 0,
+  });
+
+const formatoDinero = (valor: number | string) =>
+  Number(valor || 0).toLocaleString('en-US', {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  });
+
+export default function ProductosScreen() {
   const router = useRouter();
 
   const [productos, setProductos] = useState<Producto[]>([]);
   const [categorias, setCategorias] = useState<string[]>(
-    CATEGORIAS_PREDEFINIDAS
+    CATEGORIAS_INICIALES,
   );
-
-  const [loading, setLoading] = useState(true);
+  const [cargando, setCargando] = useState(true);
   const [guardando, setGuardando] = useState(false);
 
-  const [modalVisible, setModalVisible] = useState(false);
-  const [categoriaModalVisible, setCategoriaModalVisible] =
-    useState(false);
+  const [modalProductoVisible, setModalProductoVisible] = useState(false);
+  const [modalCategoriaVisible, setModalCategoriaVisible] = useState(false);
 
-  const [productoCategoriaEditando, setProductoCategoriaEditando] =
-    useState<Producto | null>(null);
-
-  const [cambiandoCategoria, setCambiandoCategoria] =
-    useState(false);
-
-  const [modalClasificarVisible, setModalClasificarVisible] =
-    useState(false);
-
-  const [productoEditando, setProductoEditando] =
-    useState<Producto | null>(null);
+  const [productoEditando, setProductoEditando] = useState<string | null>(
+    null,
+  );
 
   const [nombre, setNombre] = useState('');
   const [codigo, setCodigo] = useState('');
   const [categoria, setCategoria] = useState('');
   const [marca, setMarca] = useState('');
   const [precioCompra, setPrecioCompra] = useState('');
-  const [porcentajeGanancia, setPorcentajeGanancia] =
-    useState('');
-  const [stock, setStock] = useState('');
+  const [porcentajeGanancia, setPorcentajeGanancia] = useState('');
   const [stockMinimo, setStockMinimo] = useState('');
+  const [stockSimple, setStockSimple] = useState('0');
 
   const [variantes, setVariantes] = useState<VarianteProducto[]>([]);
-
   const [fotoUri, setFotoUri] = useState('');
   const [fotoBase64, setFotoBase64] = useState('');
-
   const [nuevaCategoria, setNuevaCategoria] = useState('');
-
-  // CONFIGURACIÓN DE VARIANTES
-
-  const categoriaNormalizada = normalizarCategoria(categoria);
-  const esCartera = categoriaNormalizada === 'carteras';
-
-  const permiteTalla = CATEGORIAS_CON_TALLA.includes(
-    categoriaNormalizada
-  );
-
-  const permiteColor = esCartera || permiteTalla;
-
-  const agregarVariante = () => {
-    if (!permiteColor) return;
-
-    setVariantes((actuales) => [
-      ...actuales,
-      { talla: '', color: '', stock: 0 },
-    ]);
-  };
-
-  const actualizarVariante = (
-    indice: number,
-    campo: keyof VarianteProducto,
-    valor: string
-  ) => {
-    setVariantes((actuales) =>
-      actuales.map((variante, i) => {
-        if (i !== indice) return variante;
-
-        if (campo === 'stock') {
-          const cantidad =
-            valor.trim() === ''
-              ? 0
-              : Math.max(0, Math.floor(Number(valor) || 0));
-
-          return { ...variante, stock: cantidad };
-        }
-
-        return { ...variante, [campo]: valor };
-      })
-    );
-  };
-
-  const eliminarVariante = (indice: number) => {
-    setVariantes((actuales) =>
-      actuales.filter((_, i) => i !== indice)
-    );
-  };
-
-  const obtenerVariantesNormalizadas = (
-    variantesGuardadas: any
-  ): VarianteProducto[] => {
-    if (!Array.isArray(variantesGuardadas)) return [];
-
-    return variantesGuardadas.map((variante: any) => ({
-      talla: String(variante?.talla ?? ''),
-      color: String(variante?.color ?? ''),
-      stock: Math.max(
-        0,
-        Math.floor(Number(variante?.stock) || 0)
-      ),
-    }));
-  };
-
-  // CARGAR PRODUCTOS
-
-  const cargarProductos = async () => {
-    try {
-      setLoading(true);
-
-      const q = query(
-        collection(db, 'productos'),
-        orderBy('fechaRegistro', 'desc')
-      );
-
-      const snapshot = await getDocs(q);
-
-      const lista: Producto[] = snapshot.docs.map((item) => {
-        const data = item.data();
-
-        return {
-          id: item.id,
-          nombre: data.nombre || '',
-          codigo: data.codigo || '',
-          categoria: data.categoria || '',
-          marca: data.marca || '',
-          precioCompra: Number(data.precioCompra || 0),
-          porcentajeGanancia: Number(
-            data.porcentajeGanancia || 0
-          ),
-          precioVenta: Number(data.precioVenta || 0),
-          stock: Number(data.stock || 0),
-          stockMinimo: Number(data.stockMinimo || 0),
-          fechaRegistro: data.fechaRegistro,
-          imagenUrl: data.imagenUrl || '',
-          variantes: obtenerVariantesNormalizadas(data.variantes),
-        };
-      });
-
-      setProductos(lista);
-
-      const categoriasFirestore = lista
-        .map((producto) => producto.categoria.trim())
-        .filter((item) => item.length > 0);
-
-      const categoriasUnicas = Array.from(
-        new Set([
-          ...CATEGORIAS_PREDEFINIDAS,
-          ...categoriasFirestore,
-        ].map((item) => item.trim()))
-      );
-
-      setCategorias(categoriasUnicas);
-    } catch (error) {
-      console.log('ERROR CARGANDO PRODUCTOS:', error);
-
-      Alert.alert(
-        'Error',
-        'No se pudieron cargar los productos.'
-      );
-    } finally {
-      setLoading(false);
-    }
-  };
 
   useEffect(() => {
     cargarProductos();
   }, []);
 
-  // LIMPIAR FORMULARIO
+  const cargarProductos = async () => {
+    try {
+      setCargando(true);
+
+      const consulta = query(
+        collection(db, 'productos'),
+        orderBy('fechaRegistro', 'desc'),
+      );
+
+      const resultado = await getDocs(consulta);
+
+      const lista: Producto[] = resultado.docs.map((documento) => {
+        const datos = documento.data();
+
+        const variantesGuardadas: VarianteProducto[] = Array.isArray(
+          datos.variantes,
+        )
+          ? datos.variantes.map((variante: any) => ({
+              talla: String(variante.talla ?? ''),
+              color: String(variante.color ?? ''),
+              stock: Math.max(0, Number(variante.stock ?? 0)),
+              imagenUrl: String(variante.imagenUrl ?? ''),
+              imagenUri: String(variante.imagenUrl ?? ''),
+              imagenBase64: '',
+            }))
+          : [];
+
+        return {
+          id: documento.id,
+          nombre: String(datos.nombre ?? ''),
+          codigo: String(datos.codigo ?? ''),
+          categoria: String(datos.categoria ?? ''),
+          marca: String(datos.marca ?? ''),
+          precioCompra: Number(datos.precioCompra ?? 0),
+          porcentajeGanancia: Number(datos.porcentajeGanancia ?? 0),
+          precioVenta: Number(datos.precioVenta ?? 0),
+          stock: Math.max(0, Number(datos.stock ?? 0)),
+          stockMinimo: Math.max(0, Number(datos.stockMinimo ?? 0)),
+          fechaRegistro: datos.fechaRegistro,
+          imagenUrl: String(datos.imagenUrl ?? ''),
+          variantes: variantesGuardadas,
+        };
+      });
+
+      setProductos(lista);
+
+      const categoriasGuardadas = lista
+        .map((producto) => producto.categoria.trim())
+        .filter(Boolean);
+
+      setCategorias(
+        Array.from(
+          new Set([...CATEGORIAS_INICIALES, ...categoriasGuardadas]),
+        ),
+      );
+    } catch (error) {
+      console.error('Error al cargar productos:', error);
+      Alert.alert('Error', 'No se pudieron cargar los productos.');
+    } finally {
+      setCargando(false);
+    }
+  };
 
   const limpiarFormulario = () => {
+    setProductoEditando(null);
     setNombre('');
     setCodigo('');
     setCategoria('');
     setMarca('');
     setPrecioCompra('');
     setPorcentajeGanancia('');
-    setStock('');
     setStockMinimo('');
+    setStockSimple('0');
     setVariantes([]);
     setFotoUri('');
     setFotoBase64('');
-    setNuevaCategoria('');
-    setProductoEditando(null);
   };
-
-  // NUEVO PRODUCTO
 
   const abrirNuevoProducto = () => {
     limpiarFormulario();
-    setModalVisible(true);
+    setModalProductoVisible(true);
   };
 
-  // EDITAR PRODUCTO
-
   const abrirEditarProducto = (producto: Producto) => {
-    setProductoEditando(producto);
-
+    setProductoEditando(producto.id);
     setNombre(producto.nombre);
     setCodigo(producto.codigo);
     setCategoria(producto.categoria);
     setMarca(producto.marca);
     setPrecioCompra(String(producto.precioCompra));
     setPorcentajeGanancia(String(producto.porcentajeGanancia));
-    setStock(String(producto.stock));
     setStockMinimo(String(producto.stockMinimo));
-
-    setVariantes(
-      obtenerVariantesNormalizadas(producto.variantes)
-    );
-
-    setFotoUri(producto.imagenUrl || '');
+    setStockSimple(String(producto.stock));
+    setFotoUri(producto.imagenUrl ?? '');
     setFotoBase64('');
 
-    setModalVisible(true);
+    setVariantes(
+      (producto.variantes ?? []).map((variante) => ({
+        talla: variante.talla ?? '',
+        color: variante.color ?? '',
+        stock: Number(variante.stock ?? 0),
+        imagenUrl: variante.imagenUrl ?? '',
+        imagenUri: variante.imagenUrl ?? '',
+        imagenBase64: '',
+      })),
+    );
+
+    setModalProductoVisible(true);
   };
 
-  // CERRAR MODAL
-
-  const cerrarModal = () => {
-    if (guardando) return;
-
-    setModalVisible(false);
-    limpiarFormulario();
-  };
-
-  // SELECCIONAR FOTO
-
-  const seleccionarFoto = async () => {
+  const seleccionarFotoPrincipal = async () => {
     try {
       const permiso =
         await ImagePicker.requestMediaLibraryPermissionsAsync();
@@ -320,967 +294,998 @@ export default function Productos() {
       if (!permiso.granted) {
         Alert.alert(
           'Permiso requerido',
-          'Necesitas permitir el acceso a las imágenes.'
+          'Debes permitir el acceso a tus fotos para seleccionar una imagen.',
         );
         return;
       }
 
-      const resultado =
-        await ImagePicker.launchImageLibraryAsync({
-          mediaTypes: ['images'],
-          allowsEditing: true,
-          aspect: [1, 1],
-          quality: 0.5,
-          base64: true,
-        });
-
-      if (resultado.canceled) return;
-
-      const asset = resultado.assets[0];
-
-      if (!asset) return;
-
-      setFotoUri(asset.uri);
-      setFotoBase64(asset.base64 || '');
-    } catch (error) {
-      console.log('ERROR SELECCIONANDO FOTO:', error);
-
-      Alert.alert(
-        'Error',
-        'No se pudo seleccionar la imagen.'
-      );
-    }
-  };
-
-  // SELECCIONAR CATEGORÍA
-
-  const seleccionarCategoria = (
-    categoriaSeleccionada: string
-  ) => {
-    const categoriaAnterior = normalizarCategoria(categoria);
-    const categoriaNueva = normalizarCategoria(
-      categoriaSeleccionada
-    );
-
-    setCategoria(categoriaSeleccionada);
-    setCategoriaModalVisible(false);
-
-    const nuevaPermiteVariantes =
-      categoriaNueva === 'carteras' ||
-      CATEGORIAS_CON_TALLA.includes(categoriaNueva);
-
-    if (!nuevaPermiteVariantes) {
-      setVariantes([]);
-      return;
-    }
-
-    const anteriorEraCartera = categoriaAnterior === 'carteras';
-    const nuevaEsCartera = categoriaNueva === 'carteras';
-
-    if (
-      categoriaAnterior !== categoriaNueva &&
-      anteriorEraCartera !== nuevaEsCartera
-    ) {
-      setVariantes([]);
-    }
-  };
-
-  // AGREGAR NUEVA CATEGORÍA
-
-  const agregarNuevaCategoria = () => {
-    const categoriaNueva = nuevaCategoria.trim();
-
-    if (!categoriaNueva) {
-      Alert.alert(
-        'Campo requerido',
-        'Escribe el nombre de la nueva categoría.'
-      );
-      return;
-    }
-
-    const categoriaExistente = categorias.some(
-      (item) =>
-        item.toLowerCase() === categoriaNueva.toLowerCase()
-    );
-
-    if (categoriaExistente) {
-      Alert.alert(
-        'Categoría existente',
-        'Esa categoría ya está registrada.'
-      );
-      return;
-    }
-
-    setCategorias((prev) => [...prev, categoriaNueva]);
-    setCategoria(categoriaNueva);
-    setVariantes([]);
-    setNuevaCategoria('');
-    setCategoriaModalVisible(false);
-  };
-
-  // CLASIFICAR PRODUCTO
-
-  const abrirClasificarProducto = (producto: Producto) => {
-    setProductoCategoriaEditando(producto);
-    setModalClasificarVisible(true);
-  };
-
-  // CAMBIAR CATEGORÍA
-
-  const cambiarCategoriaProducto = async (
-    nuevaCategoriaSeleccionada: string
-  ) => {
-    if (!productoCategoriaEditando || cambiandoCategoria) {
-      return;
-    }
-
-    try {
-      setCambiandoCategoria(true);
-
-      const productoRef = doc(
-        db,
-        'productos',
-        productoCategoriaEditando.id
-      );
-
-      const categoriaNueva = nuevaCategoriaSeleccionada.trim();
-      const categoriaNormalizadaNueva =
-        normalizarCategoria(categoriaNueva);
-
-      const nuevaPermiteVariantes =
-        categoriaNormalizadaNueva === 'carteras' ||
-        CATEGORIAS_CON_TALLA.includes(
-          categoriaNormalizadaNueva
-        );
-
-      const esNuevaCartera =
-        categoriaNormalizadaNueva === 'carteras';
-
-      let variantesActualizadas =
-        obtenerVariantesNormalizadas(
-          productoCategoriaEditando.variantes
-        );
-
-      if (!nuevaPermiteVariantes) {
-        variantesActualizadas = [];
-      } else if (esNuevaCartera) {
-        variantesActualizadas = variantesActualizadas.map(
-          (variante) => ({
-            talla: '',
-            color: variante.color,
-            stock: variante.stock,
-          })
-        );
-      }
-
-      const stockActualizado =
-        variantesActualizadas.length > 0
-          ? variantesActualizadas.reduce(
-              (total, variante) => total + variante.stock,
-              0
-            )
-          : productoCategoriaEditando.stock;
-
-      await updateDoc(productoRef, {
-        categoria: categoriaNueva,
-        variantes: variantesActualizadas,
-        stock: stockActualizado,
+      const resultado = await ImagePicker.launchImageLibraryAsync({
+        mediaTypes: ['images'],
+        allowsEditing: true,
+        aspect: [1, 1],
+        quality: 0.6,
+        base64: true,
       });
 
-      setProductos((prev) =>
-        prev.map((producto) =>
-          producto.id === productoCategoriaEditando.id
+      if (resultado.canceled || !resultado.assets?.[0]) return;
+
+      const imagen = resultado.assets[0];
+
+      if (!imagen.base64) {
+        Alert.alert(
+          'Imagen inválida',
+          'No se pudieron obtener los datos de la imagen. Selecciona otra.',
+        );
+        return;
+      }
+
+      setFotoUri(imagen.uri);
+      setFotoBase64(imagen.base64);
+    } catch (error) {
+      console.error('Error al seleccionar foto principal:', error);
+      Alert.alert('Error', 'No se pudo seleccionar la imagen.');
+    }
+  };
+
+  const seleccionarFotoVariante = async (indice: number) => {
+    try {
+      const permiso =
+        await ImagePicker.requestMediaLibraryPermissionsAsync();
+
+      if (!permiso.granted) {
+        Alert.alert(
+          'Permiso requerido',
+          'Debes permitir el acceso a tus fotos para seleccionar una imagen.',
+        );
+        return;
+      }
+
+      const resultado = await ImagePicker.launchImageLibraryAsync({
+        mediaTypes: ['images'],
+        allowsEditing: true,
+        aspect: [1, 1],
+        quality: 0.6,
+        base64: true,
+      });
+
+      if (resultado.canceled || !resultado.assets?.[0]) return;
+
+      const imagen = resultado.assets[0];
+
+      if (!imagen.base64) {
+        Alert.alert(
+          'Imagen inválida',
+          'No se pudieron obtener los datos de la imagen. Selecciona otra.',
+        );
+        return;
+      }
+
+      setVariantes((actuales) =>
+        actuales.map((variante, posicion) =>
+          posicion === indice
             ? {
-                ...producto,
-                categoria: categoriaNueva,
-                variantes: variantesActualizadas,
-                stock: stockActualizado,
+                ...variante,
+                imagenUri: imagen.uri,
+                imagenBase64: imagen.base64 ?? '',
               }
-            : producto
-        )
-      );
-
-      setModalClasificarVisible(false);
-      setProductoCategoriaEditando(null);
-
-      Alert.alert(
-        'Categoría actualizada',
-        `"${productoCategoriaEditando.nombre}" ahora pertenece a "${categoriaNueva}".`
+            : variante,
+        ),
       );
     } catch (error) {
-      console.log('ERROR CAMBIANDO CATEGORÍA:', error);
-
-      Alert.alert(
-        'Error',
-        'No se pudo actualizar la categoría del producto.'
-      );
-    } finally {
-      setCambiandoCategoria(false);
+      console.error('Error al seleccionar foto de variante:', error);
+      Alert.alert('Error', 'No se pudo seleccionar la imagen de la variante.');
     }
   };
 
-  const cerrarClasificador = () => {
-    if (cambiandoCategoria) return;
-
-    setModalClasificarVisible(false);
-    setProductoCategoriaEditando(null);
+  const agregarVariante = () => {
+    setVariantes((actuales) => [
+      ...actuales,
+      {
+        talla: '',
+        color: '',
+        stock: 0,
+        imagenUrl: '',
+        imagenUri: '',
+        imagenBase64: '',
+      },
+    ]);
   };
 
-  // SUBIR FOTO A SUPABASE
+  const actualizarVariante = (
+    indice: number,
+    campo: 'talla' | 'color' | 'stock',
+    valor: string,
+  ) => {
+    setVariantes((actuales) =>
+      actuales.map((variante, posicion) => {
+        if (posicion !== indice) return variante;
 
-  const subirFotoASupabase = async (
-    productoId: string
+        if (campo === 'stock') {
+          const limpio = limpiarEntero(valor);
+          const cantidad = limpio === '' ? 0 : Number(limpio);
+
+          return {
+            ...variante,
+            stock: Number.isSafeInteger(cantidad) ? cantidad : 0,
+          };
+        }
+
+        if (campo === 'talla') {
+          // Las tallas admiten letras, números y formatos como 2XL o 38.
+          const tallaLimpia = valor.replace(
+            /[^\p{L}\p{M}0-9 .-]/gu,
+            '',
+          );
+
+          return { ...variante, talla: tallaLimpia };
+        }
+
+        // El color admite nombres, espacios y guiones; no números ni emojis.
+        const colorLimpio = valor.replace(
+          /[^\p{L}\p{M} .'-]/gu,
+          '',
+        );
+
+        return { ...variante, color: colorLimpio };
+      }),
+    );
+  };
+
+  const eliminarVariante = (indice: number) => {
+    setVariantes((actuales) =>
+      actuales.filter((_, posicion) => posicion !== indice),
+    );
+  };
+
+  const obtenerVariantesNormalizadas = () =>
+    variantes.map((variante) => ({
+      ...variante,
+      talla: variante.talla.trim(),
+      color: variante.color.trim(),
+      stock: Math.max(0, Number(variante.stock) || 0),
+    }));
+
+  const subirImagenASupabase = async (
+    base64: string,
+    nombreArchivo: string,
   ): Promise<string> => {
-    if (!fotoBase64) return '';
-
-    try {
-      const ruta = `${productoId}_${Date.now()}.jpg`;
-      const imagenBytes = decode(fotoBase64);
-
-      const resultadoUpload = await supabase.storage
-        .from('productos')
-        .upload(ruta, imagenBytes, {
-          contentType: 'image/jpeg',
-          upsert: false,
-        });
-
-      if (resultadoUpload.error) {
-        throw new Error(
-          resultadoUpload.error.message ||
-            'Error al subir la imagen.'
-        );
-      }
-
-      const { data: publicUrlData } = supabase.storage
-        .from('productos')
-        .getPublicUrl(ruta);
-
-      const imagenUrl = publicUrlData.publicUrl;
-
-      if (!imagenUrl) {
-        throw new Error(
-          'No se pudo obtener la URL de la imagen.'
-        );
-      }
-
-      return imagenUrl;
-    } catch (error: any) {
-      console.log('ERROR SUBIENDO FOTO:', error);
-
-      throw new Error(
-        error?.message || 'No se pudo subir la foto.'
-      );
+    if (!base64) {
+      throw new Error('La imagen seleccionada no contiene datos.');
     }
+
+    const contenido = decode(base64);
+
+    const { error } = await supabase.storage
+      .from('productos')
+      .upload(nombreArchivo, contenido, {
+        contentType: 'image/jpeg',
+        upsert: false,
+      });
+
+    if (error) {
+      console.error('Error al subir imagen a Supabase:', error);
+      throw error;
+    }
+
+    const { data } = supabase.storage
+      .from('productos')
+      .getPublicUrl(nombreArchivo);
+
+    return data.publicUrl;
   };
 
-  // GUARDAR PRODUCTO
+  const subirFotoPrincipalASupabase = async (
+    productoId: string,
+  ): Promise<string> => {
+    if (!fotoBase64) return fotoUri;
 
-  const guardarProducto = async () => {
-    if (guardando) return;
+    const nombreArchivo = `${productoId}_${Date.now()}.jpg`;
 
-    if (!nombre.trim()) {
-      Alert.alert('Campo requerido', 'Ingresa el nombre del producto.');
-      return;
+    return subirImagenASupabase(fotoBase64, nombreArchivo);
+  };
+
+  const subirFotoVarianteASupabase = async (
+    productoId: string,
+    indice: number,
+    base64: string,
+  ): Promise<string> => {
+    const nombreArchivo =
+      `variantes/${productoId}_${indice}_${Date.now()}.jpg`;
+
+    return subirImagenASupabase(base64, nombreArchivo);
+  };
+
+  const guardarImagenesVariantes = async (
+    productoId: string,
+    lista: VarianteProducto[],
+  ) => {
+    return Promise.all(
+      lista.map(async (variante, indice) => {
+        let imagenUrl = variante.imagenUrl ?? '';
+
+        if (variante.imagenBase64) {
+          imagenUrl = await subirFotoVarianteASupabase(
+            productoId,
+            indice,
+            variante.imagenBase64,
+          );
+        }
+
+        return {
+          talla: variante.talla.trim(),
+          color: variante.color.trim(),
+          stock: Math.max(0, Number(variante.stock) || 0),
+          imagenUrl,
+        };
+      }),
+    );
+  };
+
+  const validarFormulario = (): boolean => {
+    const nombreLimpio = nombre.trim();
+    const codigoLimpio = codigo.trim().toUpperCase();
+    const marcaLimpia = marca.trim();
+    const categoriaLimpia = categoria.trim();
+
+    if (!nombreLimpio) {
+      Alert.alert('Nombre requerido', 'Escribe el nombre del producto.');
+      return false;
     }
 
-    if (!codigo.trim()) {
-      Alert.alert('Campo requerido', 'Ingresa el código del producto.');
-      return;
-    }
-
-    if (!categoria.trim()) {
-      Alert.alert('Campo requerido', 'Selecciona una categoría.');
-      return;
-    }
-
-    if (!marca.trim()) {
-      Alert.alert('Campo requerido', 'Ingresa la marca.');
-      return;
-    }
-
-    if (!precioCompra.trim()) {
-      Alert.alert('Campo requerido', 'Ingresa el precio de compra.');
-      return;
-    }
-
-    if (!porcentajeGanancia.trim()) {
+    if (!validarNombre(nombreLimpio)) {
       Alert.alert(
-        'Campo requerido',
-        'Ingresa el porcentaje de ganancia.'
+        'Nombre inválido',
+        'El nombre solo puede contener letras, espacios, puntos, apóstrofes y guiones. No se permiten números.',
       );
-      return;
+      return false;
     }
 
-    if (!stockMinimo.trim()) {
-      Alert.alert('Campo requerido', 'Ingresa el stock mínimo.');
-      return;
+    if (nombreLimpio.length < 2 || nombreLimpio.length > 80) {
+      Alert.alert(
+        'Nombre inválido',
+        'El nombre debe tener entre 2 y 80 caracteres.',
+      );
+      return false;
+    }
+
+    if (!codigoLimpio) {
+      Alert.alert('Código requerido', 'Escribe el código del producto.');
+      return false;
+    }
+
+    if (!validarCodigo(codigoLimpio)) {
+      Alert.alert(
+        'Código inválido',
+        'Usa únicamente letras, números y guiones. Ejemplo: VES-001.',
+      );
+      return false;
+    }
+
+    if (codigoLimpio.length > 30) {
+      Alert.alert('Código inválido', 'El código no puede superar 30 caracteres.');
+      return false;
+    }
+
+    const codigoDuplicado = productos.some(
+      (producto) =>
+        producto.id !== productoEditando &&
+        producto.codigo.trim().toUpperCase() === codigoLimpio,
+    );
+
+    if (codigoDuplicado) {
+      Alert.alert(
+        'Código existente',
+        'Ya hay un producto registrado con ese código.',
+      );
+      return false;
+    }
+
+    if (!marcaLimpia) {
+      Alert.alert('Marca requerida', 'Escribe la marca del producto.');
+      return false;
+    }
+
+    if (!validarMarca(marcaLimpia) || marcaLimpia.length > 60) {
+      Alert.alert(
+        'Marca inválida',
+        'La marca solo puede contener letras, números, espacios y los signos . & - o apóstrofe. Máximo 60 caracteres.',
+      );
+      return false;
+    }
+
+    if (!categoriaLimpia) {
+      Alert.alert(
+        'Categoría requerida',
+        'Selecciona una categoría para el producto.',
+      );
+      return false;
+    }
+
+    if (
+      !categorias.some(
+        (item) => normalizarCategoria(item) === normalizarCategoria(categoriaLimpia),
+      )
+    ) {
+      Alert.alert(
+        'Categoría inválida',
+        'Selecciona una categoría de la lista o registra una nueva.',
+      );
+      return false;
+    }
+
+    if (
+      precioCompra.trim() === '' ||
+      porcentajeGanancia.trim() === '' ||
+      stockMinimo.trim() === ''
+    ) {
+      Alert.alert(
+        'Campos requeridos',
+        'Completa el precio de compra, el porcentaje de ganancia y el stock mínimo.',
+      );
+      return false;
+    }
+
+    if (
+      !/^\d+(?:[.,]\d{1,2})?$/.test(precioCompra.trim()) ||
+      !/^\d+(?:[.,]\d{1,2})?$/.test(porcentajeGanancia.trim()) ||
+      !/^\d+$/.test(stockMinimo.trim())
+    ) {
+      Alert.alert(
+        'Formato inválido',
+        'Los precios y porcentajes deben ser numéricos. El stock mínimo debe ser un número entero.',
+      );
+      return false;
+    }
+
+    const compra = Number(precioCompra.replace(',', '.'));
+    const ganancia = Number(porcentajeGanancia.replace(',', '.'));
+    const minimo = Number(stockMinimo);
+
+    if (
+      !Number.isFinite(compra) ||
+      !Number.isFinite(ganancia) ||
+      !Number.isFinite(minimo) ||
+      compra <= 0 ||
+      ganancia < 0 ||
+      ganancia > 1000 ||
+      minimo < 0 ||
+      !Number.isSafeInteger(minimo)
+    ) {
+      Alert.alert(
+        'Valores inválidos',
+        'El precio de compra debe ser mayor que cero, la ganancia debe estar entre 0 y 1000 %, y el stock mínimo debe ser un entero no negativo.',
+      );
+      return false;
+    }
+
+    if (compra > 999999999) {
+      Alert.alert('Precio inválido', 'El precio de compra es demasiado alto.');
+      return false;
     }
 
     if (!productoEditando && !fotoBase64) {
       Alert.alert(
         'Foto requerida',
-        'Debes seleccionar una foto del producto.'
+        'Selecciona una foto principal para el producto.',
       );
-      return;
+      return false;
     }
 
-    const compra = Number(precioCompra);
-    const ganancia = Number(porcentajeGanancia);
-    const stockMinimoNumero = Number(stockMinimo);
-
-    if (
-      !Number.isFinite(compra) ||
-      !Number.isFinite(ganancia) ||
-      !Number.isFinite(stockMinimoNumero)
-    ) {
+    if (fotoBase64 && !fotoUri) {
       Alert.alert(
-        'Datos inválidos',
-        'Verifica los valores numéricos.'
+        'Foto inválida',
+        'Vuelve a seleccionar la foto principal del producto.',
       );
-      return;
+      return false;
     }
 
-    if (compra < 0) {
+    const requiereTalla = esCategoriaConTalla(categoriaLimpia);
+    const requiereColor = requiereTalla || esCartera(categoriaLimpia);
+
+    if (requiereColor) {
+      if (variantes.length === 0) {
+        Alert.alert(
+          'Variantes requeridas',
+          'Agrega al menos una variante con su color y stock.',
+        );
+        return false;
+      }
+
+      for (let indice = 0; indice < variantes.length; indice++) {
+        const variante = variantes[indice];
+        const numero = indice + 1;
+        const talla = variante.talla.trim();
+        const color = variante.color.trim();
+
+        if (requiereTalla && !talla) {
+          Alert.alert(
+            'Talla requerida',
+            `Completa la talla de la variante ${numero}.`,
+          );
+          return false;
+        }
+
+        if (
+          requiereTalla &&
+          (talla.length > 15 ||
+            !/^[\p{L}\p{M}0-9]+(?:[ .-][\p{L}\p{M}0-9]+)*$/u.test(talla))
+        ) {
+          Alert.alert(
+            'Talla inválida',
+            `La talla de la variante ${numero} solo admite letras, números, espacios, puntos y guiones. Máximo 15 caracteres.`,
+          );
+          return false;
+        }
+
+        if (!color) {
+          Alert.alert(
+            'Color requerido',
+            `Completa el color de la variante ${numero}.`,
+          );
+          return false;
+        }
+
+        if (
+          color.length > 30 ||
+          !/^[\p{L}\p{M}]+(?:[ .'-][\p{L}\p{M}]+)*$/u.test(color)
+        ) {
+          Alert.alert(
+            'Color inválido',
+            `El color de la variante ${numero} solo puede contener letras y separadores habituales. Máximo 30 caracteres.`,
+          );
+          return false;
+        }
+
+        if (
+          !Number.isSafeInteger(variante.stock) ||
+          variante.stock < 0 ||
+          variante.stock > 1000000
+        ) {
+          Alert.alert(
+            'Stock inválido',
+            `El stock de la variante ${numero} debe ser un entero entre 0 y 1 000 000.`,
+          );
+          return false;
+        }
+
+        if (variante.imagenBase64 && !variante.imagenUri) {
+          Alert.alert(
+            'Imagen inválida',
+            `Vuelve a seleccionar la foto de la variante ${numero}.`,
+          );
+          return false;
+        }
+      }
+
+      const combinaciones = variantes.map((variante) =>
+        esCartera(categoriaLimpia)
+          ? variante.color.trim().toLocaleLowerCase('es')
+          : `${variante.talla.trim().toLocaleLowerCase('es')}|${variante.color.trim().toLocaleLowerCase('es')}`,
+      );
+
+      if (new Set(combinaciones).size !== combinaciones.length) {
+        Alert.alert(
+          'Variantes duplicadas',
+          esCartera(categoriaLimpia)
+            ? 'No puedes registrar el mismo color de cartera más de una vez.'
+            : 'No puedes registrar dos variantes con la misma talla y color.',
+        );
+        return false;
+      }
+    } else {
+      if (!/^\d+$/.test(stockSimple.trim())) {
+        Alert.alert(
+          'Stock inválido',
+          'El stock debe ser un número entero no negativo.',
+        );
+        return false;
+      }
+
+      const cantidad = Number(stockSimple);
+
+      if (
+        !Number.isSafeInteger(cantidad) ||
+        cantidad < 0 ||
+        cantidad > 1000000
+      ) {
+        Alert.alert(
+          'Stock inválido',
+          'El stock debe ser un entero entre 0 y 1 000 000.',
+        );
+        return false;
+      }
+    }
+
+    return true;
+  };
+
+  const guardarProducto = async () => {
+    if (guardando) return;
+    if (!validarFormulario()) return;
+
+    const compra = Number(precioCompra.replace(',', '.'));
+    const ganancia = Number(porcentajeGanancia.replace(',', '.'));
+    const minimo = Number(stockMinimo);
+
+    const categoriaConTalla = esCategoriaConTalla(categoria);
+    const categoriaCartera = esCartera(categoria);
+    const requiereVariantes = categoriaConTalla || categoriaCartera;
+
+    const variantesNormalizadas = requiereVariantes
+      ? obtenerVariantesNormalizadas()
+      : [];
+
+    const stockTotal = requiereVariantes
+      ? variantesNormalizadas.reduce(
+          (total, variante) => total + variante.stock,
+          0,
+        )
+      : Number(stockSimple);
+
+    const precioVenta = Number((compra * (1 + ganancia / 100)).toFixed(2));
+
+    if (!Number.isFinite(precioVenta) || precioVenta <= 0) {
       Alert.alert(
         'Precio inválido',
-        'El precio de compra no puede ser negativo.'
+        'No se pudo calcular un precio de venta válido. Revisa el costo y el porcentaje de ganancia.',
       );
       return;
     }
-
-    if (ganancia < 0) {
-      Alert.alert(
-        'Ganancia inválida',
-        'El porcentaje de ganancia no puede ser negativo.'
-      );
-      return;
-    }
-
-    if (stockMinimoNumero < 0) {
-      Alert.alert(
-        'Stock inválido',
-        'El stock mínimo no puede ser negativo.'
-      );
-      return;
-    }
-
-    const categoriaActual = normalizarCategoria(categoria);
-    const categoriaEsCartera = categoriaActual === 'carteras';
-
-    const categoriaTieneVariantes =
-      categoriaEsCartera ||
-      CATEGORIAS_CON_TALLA.includes(categoriaActual);
-
-    const variantesFinales: VarianteProducto[] =
-      categoriaTieneVariantes
-        ? variantes
-            .filter((v) => v.talla.trim() || v.color.trim())
-            .map((v) => ({
-              talla: categoriaEsCartera ? '' : v.talla.trim(),
-              color: v.color.trim(),
-              stock: Math.max(
-                0,
-                Math.floor(Number(v.stock) || 0)
-              ),
-            }))
-        : [];
-
-    if (
-      categoriaEsCartera &&
-      variantesFinales.some((v) => !v.color)
-    ) {
-      Alert.alert(
-        'Color requerido',
-        'Indica el color de cada variante de la cartera.'
-      );
-      return;
-    }
-
-    if (
-      !categoriaEsCartera &&
-      CATEGORIAS_CON_TALLA.includes(categoriaActual) &&
-      variantesFinales.some((v) => !v.talla || !v.color)
-    ) {
-      Alert.alert(
-        'Variante incompleta',
-        'Completa la talla y el color de cada variante registrada.'
-      );
-      return;
-    }
-
-    const combinaciones = variantesFinales.map((v) =>
-      categoriaEsCartera
-        ? v.color.trim().toLocaleLowerCase('es')
-        : `${v.talla.trim().toLocaleLowerCase('es')}|${v.color
-            .trim()
-            .toLocaleLowerCase('es')}`
-    );
-
-    if (
-      new Set(combinaciones).size !== combinaciones.length
-    ) {
-      Alert.alert(
-        'Variante duplicada',
-        categoriaEsCartera
-          ? 'No puedes registrar dos variantes del mismo color.'
-          : 'No puedes registrar dos variantes con la misma talla y color.'
-      );
-      return;
-    }
-
-    const hayVariantes = variantesFinales.length > 0;
-
-    if (!hayVariantes && !stock.trim()) {
-      Alert.alert(
-        'Campo requerido',
-        'Ingresa el stock del producto.'
-      );
-      return;
-    }
-
-    const stockIntroducido =
-      stock.trim() === '' ? 0 : Number(stock);
-
-    if (
-      !hayVariantes &&
-      (!Number.isFinite(stockIntroducido) ||
-        stockIntroducido < 0)
-    ) {
-      Alert.alert(
-        'Stock inválido',
-        'El stock debe ser un número igual o mayor que cero.'
-      );
-      return;
-    }
-
-    const stockVariantes = variantesFinales.reduce(
-      (total, variante) => total + variante.stock,
-      0
-    );
-
-    const stockFinal = hayVariantes
-      ? stockVariantes
-      : Math.floor(stockIntroducido);
-
-    const precioVenta =
-      compra + (compra * ganancia) / 100;
 
     try {
       setGuardando(true);
 
+      const datosBase = {
+        nombre: nombre.trim(),
+        codigo: codigo.trim().toUpperCase(),
+        categoria: categoria.trim(),
+        marca: marca.trim(),
+        precioCompra: compra,
+        porcentajeGanancia: ganancia,
+        precioVenta,
+        stock: stockTotal,
+        stockMinimo: minimo,
+      };
+
       if (productoEditando) {
-        const productoRef = doc(
-          db,
-          'productos',
-          productoEditando.id
-        );
+        const referencia = doc(db, 'productos', productoEditando);
 
-        const productoData = {
-          nombre: nombre.trim(),
-          codigo: codigo.trim(),
-          categoria: categoria.trim(),
-          marca: marca.trim(),
-          precioCompra: compra,
-          porcentajeGanancia: ganancia,
-          precioVenta,
-          stock: stockFinal,
-          stockMinimo: stockMinimoNumero,
-          variantes: variantesFinales,
-        };
+        const [imagenPrincipal, variantesConImagenes] = await Promise.all([
+          subirFotoPrincipalASupabase(productoEditando),
+          guardarImagenesVariantes(
+            productoEditando,
+            variantesNormalizadas,
+          ),
+        ]);
 
-        await updateDoc(productoRef, productoData);
+        await updateDoc(referencia, {
+          ...datosBase,
+          imagenUrl: imagenPrincipal,
+          variantes: variantesConImagenes,
+          fechaActualizacion: Timestamp.now(),
+        });
 
-        if (fotoBase64) {
-          const imagenUrl = await subirFotoASupabase(
-            productoEditando.id
-          );
-
-          if (imagenUrl) {
-            await updateDoc(productoRef, { imagenUrl });
-          }
-        }
-
-        Alert.alert(
-          'Éxito',
-          'Producto actualizado correctamente.'
-        );
+        Alert.alert('Éxito', 'Producto actualizado correctamente.');
       } else {
-        const productoData = {
-          nombre: nombre.trim(),
-          codigo: codigo.trim(),
-          categoria: categoria.trim(),
-          marca: marca.trim(),
-          precioCompra: compra,
-          porcentajeGanancia: ganancia,
-          precioVenta,
-          stock: stockFinal,
-          stockMinimo: stockMinimoNumero,
-          variantes: variantesFinales,
-          fechaRegistro: Timestamp.now(),
+        const nuevoProducto = await addDoc(collection(db, 'productos'), {
+          ...datosBase,
           imagenUrl: '',
-        };
+          variantes: [],
+          fechaRegistro: Timestamp.now(),
+        });
 
-        const documento = await addDoc(
-          collection(db, 'productos'),
-          productoData
-        );
+        const [imagenPrincipal, variantesConImagenes] = await Promise.all([
+          subirFotoPrincipalASupabase(nuevoProducto.id),
+          guardarImagenesVariantes(
+            nuevoProducto.id,
+            variantesNormalizadas,
+          ),
+        ]);
 
-        const imagenUrl = await subirFotoASupabase(
-          documento.id
-        );
+        await updateDoc(doc(db, 'productos', nuevoProducto.id), {
+          imagenUrl: imagenPrincipal,
+          variantes: variantesConImagenes,
+        });
 
-        if (imagenUrl) {
-          await updateDoc(
-            doc(db, 'productos', documento.id),
-            { imagenUrl }
-          );
-        }
-
-        Alert.alert(
-          'Éxito',
-          'Producto guardado correctamente.'
-        );
+        Alert.alert('Éxito', 'Producto registrado correctamente.');
       }
 
-      setModalVisible(false);
+      setModalProductoVisible(false);
       limpiarFormulario();
-
       await cargarProductos();
     } catch (error: any) {
-      console.log('ERROR GUARDANDO PRODUCTO:', error);
+      console.error('Error al guardar producto:', error);
 
       Alert.alert(
-        'Error',
-        error?.message || 'No se pudo guardar el producto.'
+        'Error al guardar',
+        error?.message ||
+          'No se pudo guardar el producto. Verifica la conexión, Firebase y la configuración del almacenamiento de Supabase.',
       );
     } finally {
       setGuardando(false);
     }
   };
 
-  // ELIMINAR FOTO DE SUPABASE
+  const eliminarFotoDeSupabase = async (url?: string) => {
+    if (!url) return;
 
-  const eliminarFotoDeSupabase = async (
-    imagenUrl: string
-  ) => {
     try {
-      const partes = imagenUrl.split('/');
-      const nombreArchivo = partes[partes.length - 1];
+      const marcador = '/storage/v1/object/public/productos/';
+      const posicion = url.indexOf(marcador);
 
-      if (!nombreArchivo) return;
+      if (posicion === -1) return;
+
+      const rutaArchivo = decodeURIComponent(
+        url.substring(posicion + marcador.length).split('?')[0],
+      );
+
+      if (!rutaArchivo) return;
 
       const { error } = await supabase.storage
         .from('productos')
-        .remove([nombreArchivo]);
+        .remove([rutaArchivo]);
 
       if (error) {
-        console.log('ERROR ELIMINANDO FOTO:', error);
+        console.warn('No se pudo eliminar la imagen de Supabase:', error);
       }
     } catch (error) {
-      console.log('ERROR ELIMINANDO FOTO:', error);
+      console.warn('Error al eliminar imagen:', error);
     }
   };
-
-  // ELIMINAR PRODUCTO
 
   const eliminarProducto = (producto: Producto) => {
     Alert.alert(
       'Eliminar producto',
-      `¿Estás seguro de eliminar "${producto.nombre}"?`,
+      `¿Deseas eliminar "${producto.nombre}"? Esta acción no se puede deshacer.`,
       [
-        {
-          text: 'Cancelar',
-          style: 'cancel',
-        },
+        { text: 'Cancelar', style: 'cancel' },
         {
           text: 'Eliminar',
           style: 'destructive',
           onPress: async () => {
             try {
-              setLoading(true);
+              await eliminarFotoDeSupabase(producto.imagenUrl);
 
-              if (producto.imagenUrl) {
-                await eliminarFotoDeSupabase(
-                  producto.imagenUrl
-                );
+              for (const variante of producto.variantes ?? []) {
+                await eliminarFotoDeSupabase(variante.imagenUrl);
               }
 
-              await deleteDoc(
-                doc(db, 'productos', producto.id)
-              );
-
-              Alert.alert(
-                'Éxito',
-                'Producto eliminado correctamente.'
-              );
-
+              await deleteDoc(doc(db, 'productos', producto.id));
               await cargarProductos();
-            } catch (error) {
-              console.log(
-                'ERROR ELIMINANDO PRODUCTO:',
-                error
-              );
 
-              Alert.alert(
-                'Error',
-                'No se pudo eliminar el producto.'
-              );
-            } finally {
-              setLoading(false);
+              Alert.alert('Éxito', 'Producto eliminado correctamente.');
+            } catch (error) {
+              console.error('Error al eliminar producto:', error);
+              Alert.alert('Error', 'No se pudo eliminar el producto.');
             }
           },
         },
-      ]
+      ],
     );
   };
 
-  // INTERFAZ
+  const agregarCategoria = () => {
+    const valor = nuevaCategoria.trim();
+
+    if (!valor) {
+      Alert.alert('Categoría requerida', 'Escribe el nombre de la categoría.');
+      return;
+    }
+
+    if (
+      valor.length < 2 ||
+      valor.length > 40 ||
+      !validarTextoCategoria(valor)
+    ) {
+      Alert.alert(
+        'Categoría inválida',
+        'Usa entre 2 y 40 caracteres. Solo se permiten letras, números, espacios, guiones, apóstrofes y el signo &.',
+      );
+      return;
+    }
+
+    const existe = categorias.some(
+      (item) => normalizarCategoria(item) === normalizarCategoria(valor),
+    );
+
+    if (existe) {
+      Alert.alert('Categoría existente', 'Esa categoría ya está registrada.');
+      return;
+    }
+
+    setCategorias((actuales) => [...actuales, valor]);
+    setCategoria(valor);
+    setNuevaCategoria('');
+    setModalCategoriaVisible(false);
+  };
+
+  const seleccionarCategoria = (valor: string) => {
+    setCategoria(valor);
+
+    if (!esCategoriaConTalla(valor) && !esCartera(valor)) {
+      setVariantes([]);
+    } else if (esCartera(valor)) {
+      setVariantes((actuales) =>
+        actuales.map((variante) => ({
+          ...variante,
+          talla: '',
+        })),
+      );
+    }
+  };
+
+  const stockCalculado = variantes.reduce(
+    (total, variante) => total + Math.max(0, Number(variante.stock) || 0),
+    0,
+  );
+
+  const precioVentaVista =
+    (Number(precioCompra.replace(',', '.')) || 0) *
+    (1 + (Number(porcentajeGanancia.replace(',', '.')) || 0) / 100);
+
+  const requiereVariantes =
+    esCategoriaConTalla(categoria) || esCartera(categoria);
 
   return (
     <SafeAreaView style={styles.container}>
-      <StatusBar
-        barStyle="dark-content"
-        backgroundColor="#FCE7F0"
-      />
+      <StatusBar barStyle="dark-content" backgroundColor="#FFF5F8" />
 
       <View style={styles.header}>
         <TouchableOpacity
-          style={styles.headerButton}
+          style={styles.backButton}
           onPress={() => router.back()}
+          activeOpacity={0.75}
         >
           <MaterialCommunityIcons
             name="arrow-left"
             size={24}
-            color="#8E3158"
+            color="#762449"
           />
         </TouchableOpacity>
 
         <View style={styles.headerTextContainer}>
-          <Text style={styles.headerTitle}>Inventario</Text>
+          <Text style={styles.headerEyebrow}>LIZMA STYLE · ADMINISTRACIÓN</Text>
+          <Text style={styles.headerTitle}>Productos</Text>
           <Text style={styles.headerSubtitle}>
-            Lizma Style · Catálogo
+            Gestiona tu inventario y catálogo
           </Text>
         </View>
 
         <TouchableOpacity
-          style={styles.addHeaderButton}
+          style={styles.addButton}
           onPress={abrirNuevoProducto}
+          activeOpacity={0.8}
         >
-          <MaterialCommunityIcons
-            name="plus"
-            size={26}
-            color="#FFFFFF"
-          />
+          <MaterialCommunityIcons name="plus" size={25} color="#FFFFFF" />
         </TouchableOpacity>
       </View>
 
-      {loading ? (
+      {cargando ? (
         <View style={styles.loadingContainer}>
-          <ActivityIndicator size="large" color="#D63384" />
-          <Text style={styles.loadingText}>
-            Cargando productos...
-          </Text>
+          <ActivityIndicator size="large" color="#B83268" />
+          <Text style={styles.loadingText}>Cargando productos...</Text>
         </View>
       ) : (
         <ScrollView
-          contentContainerStyle={styles.productosContainer}
+          contentContainerStyle={styles.productList}
           showsVerticalScrollIndicator={false}
         >
-          <View style={styles.welcomeCard}>
-            <View style={styles.welcomeTextContainer}>
-              <Text style={styles.welcomeEyebrow}>
-                LIZMA STYLE
-              </Text>
-              <Text style={styles.welcomeTitle}>
-                Tu inventario,
-              </Text>
-              <Text style={styles.welcomeTitleAccent}>
-                siempre en orden.
-              </Text>
-              <Text style={styles.welcomeDescription}>
-                Administra tus productos, precios y existencias.
+          <View style={styles.summaryCard}>
+            <View style={styles.summaryIcon}>
+              <MaterialCommunityIcons
+                name="package-variant"
+                size={27}
+                color="#B83268"
+              />
+            </View>
+            <View style={styles.summaryTextContainer}>
+              <Text style={styles.summaryLabel}>Inventario</Text>
+              <Text style={styles.summaryDescription}>
+                Productos registrados en el sistema
               </Text>
             </View>
-
-            <View style={styles.welcomeIcon}>
-              <MaterialCommunityIcons
-                name="shopping-outline"
-                size={38}
-                color="#B83270"
-              />
+            <View style={styles.summaryNumberContainer}>
+              <Text style={styles.summaryValue}>{formatoCantidad(productos.length)}</Text>
             </View>
           </View>
 
-          <View style={styles.sectionHeading}>
+          <View style={styles.listHeading}>
             <View>
-              <Text style={styles.sectionTitle}>Catálogo</Text>
-              <Text style={styles.sectionSubtitle}>
-                Tus productos registrados
+              <Text style={styles.listTitle}>Tu catálogo</Text>
+              <Text style={styles.listSubtitle}>
+                Administra los productos registrados
               </Text>
             </View>
-
             <View style={styles.countBadge}>
-              <Text style={styles.countBadgeText}>
-                {productos.length}
-              </Text>
+              <Text style={styles.countBadgeText}>{formatoCantidad(productos.length)}</Text>
             </View>
           </View>
 
           {productos.length === 0 ? (
             <View style={styles.emptyContainer}>
-              <View style={styles.emptyIconCircle}>
+              <View style={styles.emptyIconContainer}>
                 <MaterialCommunityIcons
-                  name="package-variant"
-                  size={45}
-                  color="#D63384"
+                  name="package-variant-closed"
+                  size={48}
+                  color="#B83268"
                 />
               </View>
-
-              <Text style={styles.emptyTitle}>
-                No hay productos
-              </Text>
-
+              <Text style={styles.emptyTitle}>Tu catálogo está vacío</Text>
               <Text style={styles.emptyText}>
-                Agrega tu primer producto para comenzar a organizar
-                tu inventario.
+                Agrega tu primer producto para comenzar a administrar el
+                inventario de Lizma Style.
               </Text>
-
               <TouchableOpacity
-                style={styles.addButton}
+                style={styles.primaryButton}
                 onPress={abrirNuevoProducto}
+                activeOpacity={0.85}
               >
                 <MaterialCommunityIcons
                   name="plus"
-                  size={21}
+                  size={19}
                   color="#FFFFFF"
                 />
-
-                <Text style={styles.addButtonText}>
-                  Agregar producto
-                </Text>
+                <Text style={styles.primaryButtonText}>Agregar producto</Text>
               </TouchableOpacity>
             </View>
           ) : (
-            productos.map((producto) => {
-              const stockBajo =
-                producto.stock <= producto.stockMinimo;
-
-              return (
-                <View
-                  key={producto.id}
-                  style={styles.productCard}
-                >
-                  <View style={styles.productCardTop}>
-                    <View style={styles.imageContainer}>
-                      {producto.imagenUrl ? (
-                        <Image
-                          source={{ uri: producto.imagenUrl }}
-                          style={styles.productImage}
-                          resizeMode="cover"
-                        />
-                      ) : (
-                        <MaterialCommunityIcons
-                          name="image-outline"
-                          size={40}
-                          color="#D4A1B8"
-                        />
-                      )}
-                    </View>
-
-                    <View style={styles.productInfo}>
-                      <Text
-                        style={styles.productName}
-                        numberOfLines={2}
-                      >
-                        {producto.nombre}
-                      </Text>
-
-                      <Text style={styles.productCode}>
-                        Código: {producto.codigo}
-                      </Text>
-
-                      <TouchableOpacity
-                        style={styles.categoryChangeButton}
-                        onPress={() =>
-                          abrirClasificarProducto(producto)
-                        }
-                      >
-                        <MaterialCommunityIcons
-                          name="tag-outline"
-                          size={14}
-                          color="#C02670"
-                        />
-
-                        <Text
-                          style={styles.productCategory}
-                          numberOfLines={1}
-                        >
-                          {producto.categoria || 'Sin categoría'}
-                        </Text>
-
-                        <MaterialCommunityIcons
-                          name="pencil-outline"
-                          size={14}
-                          color="#C02670"
-                        />
-                      </TouchableOpacity>
-
-                      <Text
-                        style={styles.productBrand}
-                        numberOfLines={1}
-                      >
-                        {producto.marca}
-                      </Text>
-                    </View>
-
-                    <View style={styles.actions}>
-                      <TouchableOpacity
-                        style={styles.editButton}
-                        onPress={() =>
-                          abrirEditarProducto(producto)
-                        }
-                      >
-                        <MaterialCommunityIcons
-                          name="pencil-outline"
-                          size={20}
-                          color="#8E3158"
-                        />
-                      </TouchableOpacity>
-
-                      <TouchableOpacity
-                        style={styles.deleteButton}
-                        onPress={() =>
-                          eliminarProducto(producto)
-                        }
-                      >
-                        <MaterialCommunityIcons
-                          name="trash-can-outline"
-                          size={20}
-                          color="#C02670"
-                        />
-                      </TouchableOpacity>
-                    </View>
-                  </View>
-
-                  <View style={styles.productDivider} />
-
-                  <View style={styles.productMetrics}>
-                    <View style={styles.priceMetric}>
-                      <Text style={styles.metricLabel}>
-                        Precio de venta
-                      </Text>
-
-                      <Text style={styles.price}>
-                        C$ {producto.precioVenta.toFixed(2)}
-                      </Text>
-                    </View>
-
-                    <View style={styles.stockMetric}>
-                      <Text style={styles.metricLabel}>
-                        Existencias
-                      </Text>
-
-                      <View
-                        style={[
-                          styles.stockBadge,
-                          stockBajo
-                            ? styles.stockBadgeLow
-                            : styles.stockBadgeOk,
-                        ]}
-                      >
-                        <MaterialCommunityIcons
-                          name={
-                            stockBajo
-                              ? 'alert-circle-outline'
-                              : 'check-circle-outline'
-                          }
-                          size={15}
-                          color={stockBajo ? '#B45309' : '#18794E'}
-                        />
-
-                        <Text
-                          style={[
-                            styles.stock,
-                            stockBajo
-                              ? styles.stockLow
-                              : styles.stockNormal,
-                          ]}
-                        >
-                          {producto.stock} unidades
-                        </Text>
-                      </View>
-                    </View>
-                  </View>
-
-                  {stockBajo && (
-                    <View style={styles.lowStockNotice}>
+            productos.map((producto) => (
+              <View key={producto.id} style={styles.productCard}>
+                <View style={styles.productImageContainer}>
+                  {producto.imagenUrl ? (
+                    <Image
+                      source={{ uri: producto.imagenUrl }}
+                      style={styles.productImage}
+                      resizeMode="cover"
+                    />
+                  ) : (
+                    <View
+                      style={[styles.productImage, styles.imagePlaceholder]}
+                    >
                       <MaterialCommunityIcons
-                        name="alert-outline"
-                        size={16}
-                        color="#B45309"
+                        name="image-outline"
+                        size={35}
+                        color="#B83268"
                       />
+                    </View>
+                  )}
 
-                      <Text style={styles.lowStockNoticeText}>
-                        Existencias en el mínimo o por debajo
+                  <View style={styles.categoryBadge}>
+                    <Text style={styles.categoryBadgeText} numberOfLines={1}>
+                      {producto.categoria}
+                    </Text>
+                  </View>
+                </View>
+
+                <View style={styles.productInfo}>
+                  <Text style={styles.productName} numberOfLines={2}>
+                    {producto.nombre}
+                  </Text>
+
+                  <Text style={styles.productMeta}>
+                    Código: {producto.codigo}
+                  </Text>
+
+                  <View style={styles.brandRow}>
+                    <MaterialCommunityIcons
+                      name="tag-outline"
+                      size={14}
+                      color="#9A7183"
+                    />
+                    <Text style={styles.productMeta} numberOfLines={1}>
+                      {producto.marca}
+                    </Text>
+                  </View>
+
+                  <Text style={styles.productPrice}>
+                    C$ {formatoDinero(producto.precioVenta)}
+                  </Text>
+
+                  <View
+                    style={[
+                      styles.stockBadge,
+                      producto.stock <= producto.stockMinimo &&
+                        styles.stockBadgeLow,
+                    ]}
+                  >
+                    <View
+                      style={[
+                        styles.stockDot,
+                        producto.stock <= producto.stockMinimo &&
+                          styles.stockDotLow,
+                      ]}
+                    />
+                    <Text
+                      style={[
+                        styles.stockText,
+                        producto.stock <= producto.stockMinimo &&
+                          styles.lowStockText,
+                      ]}
+                    >
+                      Stock: {formatoCantidad(producto.stock)}
+                      {producto.stock <= producto.stockMinimo
+                        ? ' · Stock bajo'
+                        : ''}
+                    </Text>
+                  </View>
+
+                  {!!producto.variantes?.length && (
+                    <View style={styles.variantCountRow}>
+                      <MaterialCommunityIcons
+                        name="layers-outline"
+                        size={14}
+                        color="#91677A"
+                      />
+                      <Text style={styles.variantCount}>
+                        {formatoCantidad(producto.variantes.length)} variante(s)
                       </Text>
                     </View>
                   )}
 
-                  {producto.variantes &&
-                    producto.variantes.length > 0 && (
-                      <View style={styles.variantSummaryContainer}>
-                        <MaterialCommunityIcons
-                          name="palette-outline"
-                          size={15}
-                          color="#A34C76"
-                        />
+                  <View style={styles.productActions}>
+                    <TouchableOpacity
+                      style={styles.editButton}
+                      onPress={() => abrirEditarProducto(producto)}
+                      activeOpacity={0.8}
+                    >
+                      <MaterialCommunityIcons
+                        name="pencil-outline"
+                        size={16}
+                        color="#FFFFFF"
+                      />
+                      <Text style={styles.actionButtonText}>Editar</Text>
+                    </TouchableOpacity>
 
-                        <Text style={styles.variantSummary}>
-                          {producto.variantes.length}{' '}
-                          {normalizarCategoria(producto.categoria) ===
-                          'carteras'
-                            ? 'color(es) registrados'
-                            : 'variantes registradas'}
-                        </Text>
-                      </View>
-                    )}
+                    <TouchableOpacity
+                      style={styles.deleteButton}
+                      onPress={() => eliminarProducto(producto)}
+                      activeOpacity={0.8}
+                    >
+                      <MaterialCommunityIcons
+                        name="delete-outline"
+                        size={17}
+                        color="#B32645"
+                      />
+                      <Text style={styles.deleteButtonText}>Eliminar</Text>
+                    </TouchableOpacity>
+                  </View>
                 </View>
-              );
-            })
+              </View>
+            ))
           )}
-
-          <Text style={styles.footerText}>
-            LIZMA STYLE · GESTIÓN DE INVENTARIO
-          </Text>
         </ScrollView>
       )}
 
-      {/* MODAL NUEVO / EDITAR PRODUCTO */}
-
       <Modal
-        visible={modalVisible}
+        visible={modalProductoVisible}
         animationType="slide"
         transparent
-        onRequestClose={cerrarModal}
+        onRequestClose={() => {
+          if (!guardando) setModalProductoVisible(false);
+        }}
       >
         <View style={styles.modalOverlay}>
-          <View style={styles.modalContainer}>
+          <View style={styles.modalContent}>
             <View style={styles.modalHeader}>
-              <Text style={styles.modalTitle}>
-                {productoEditando
-                  ? 'Editar producto'
-                  : 'Nuevo producto'}
-              </Text>
+              <View style={styles.modalHeadingText}>
+                <Text style={styles.modalEyebrow}>LIZMA STYLE</Text>
+                <Text style={styles.modalTitle}>
+                  {productoEditando ? 'Editar producto' : 'Nuevo producto'}
+                </Text>
+                <Text style={styles.modalSubtitle}>
+                  Información y detalles del inventario
+                </Text>
+              </View>
 
               <TouchableOpacity
-                onPress={cerrarModal}
+                style={styles.closeButton}
+                onPress={() => setModalProductoVisible(false)}
                 disabled={guardando}
-                style={styles.modalCloseButton}
               >
                 <MaterialCommunityIcons
                   name="close"
-                  size={25}
-                  color="#8E3158"
+                  size={23}
+                  color="#762449"
                 />
               </TouchableOpacity>
             </View>
@@ -1288,349 +1293,435 @@ export default function Productos() {
             <ScrollView
               keyboardShouldPersistTaps="handled"
               showsVerticalScrollIndicator={false}
-              contentContainerStyle={styles.formContainer}
+              contentContainerStyle={styles.formContent}
             >
-              <View style={styles.photoSection}>
+              <View style={styles.formSection}>
+                <View style={styles.sectionHeadingRow}>
+                  <View style={styles.sectionIcon}>
+                    <MaterialCommunityIcons
+                      name="image-outline"
+                      size={20}
+                      color="#B83268"
+                    />
+                  </View>
+                  <View style={styles.sectionHeadingText}>
+                    <Text style={styles.sectionTitle}>
+                      Foto principal del producto
+                    </Text>
+                    <Text style={styles.sectionSubtitle}>
+                      Imagen de presentación del producto
+                    </Text>
+                  </View>
+                </View>
+
                 <TouchableOpacity
-                  style={styles.photoButton}
-                  onPress={seleccionarFoto}
+                  style={styles.mainPhotoButton}
+                  onPress={seleccionarFotoPrincipal}
                   disabled={guardando}
+                  activeOpacity={0.85}
                 >
                   {fotoUri ? (
                     <Image
                       source={{ uri: fotoUri }}
-                      style={styles.previewImage}
+                      style={styles.mainPhotoPreview}
+                      resizeMode="cover"
                     />
                   ) : (
-                    <>
-                      <MaterialCommunityIcons
-                        name="camera-plus-outline"
-                        size={42}
-                        color="#D63384"
-                      />
-
-                      <Text style={styles.photoText}>
-                        Seleccionar foto
+                    <View style={styles.photoPlaceholder}>
+                      <View style={styles.photoIconCircle}>
+                        <MaterialCommunityIcons
+                          name="camera-plus-outline"
+                          size={30}
+                          color="#B83268"
+                        />
+                      </View>
+                      <Text style={styles.photoPlaceholderText}>
+                        Seleccionar foto principal
                       </Text>
-                    </>
+                      <Text style={styles.photoHint}>
+                        Elige una imagen desde tu galería
+                      </Text>
+                    </View>
                   )}
                 </TouchableOpacity>
+              </View>
 
-                {fotoUri && (
-                  <TouchableOpacity
-                    style={styles.changePhotoButton}
-                    onPress={seleccionarFoto}
-                    disabled={guardando}
-                  >
+              <View style={styles.formSection}>
+                <View style={styles.sectionHeadingRow}>
+                  <View style={styles.sectionIcon}>
                     <MaterialCommunityIcons
-                      name="camera"
-                      size={18}
-                      color="#FFFFFF"
+                      name="clipboard-text-outline"
+                      size={20}
+                      color="#B83268"
                     />
-
-                    <Text style={styles.changePhotoText}>
-                      Cambiar foto
+                  </View>
+                  <View style={styles.sectionHeadingText}>
+                    <Text style={styles.sectionTitle}>
+                      Información del producto
                     </Text>
-                  </TouchableOpacity>
+                    <Text style={styles.sectionSubtitle}>
+                      Completa los datos de identificación
+                    </Text>
+                  </View>
+                </View>
+
+                <Text style={styles.inputLabel}>Nombre del producto *</Text>
+                <TextInput
+                  style={styles.input}
+                  value={nombre}
+                  onChangeText={(valor) =>
+                    setNombre(
+                      valor.replace(
+                        /[^\p{L}\p{M} .'-]/gu,
+                        '',
+                      ),
+                    )
+                  }
+                  placeholder="Ej. Vestido elegante"
+                  placeholderTextColor="#B19AA5"
+                  maxLength={80}
+                  autoCapitalize="words"
+                />
+
+                <Text style={styles.inputLabel}>Código *</Text>
+                <TextInput
+                  style={styles.input}
+                  value={codigo}
+                  onChangeText={(valor) =>
+                    setCodigo(
+                      valor
+                        .toUpperCase()
+                        .replace(/[^A-Z0-9-]/g, '')
+                        .replace(/-{2,}/g, '-'),
+                    )
+                  }
+                  placeholder="Ej. VES-001"
+                  placeholderTextColor="#B19AA5"
+                  autoCapitalize="characters"
+                  autoCorrect={false}
+                  maxLength={30}
+                />
+
+                <Text style={styles.inputLabel}>Marca *</Text>
+                <TextInput
+                  style={styles.input}
+                  value={marca}
+                  onChangeText={(valor) =>
+                    setMarca(
+                      valor.replace(
+                        /[^\p{L}\p{M}0-9 .&'-]/gu,
+                        '',
+                      ),
+                    )
+                  }
+                  placeholder="Nombre de la marca"
+                  placeholderTextColor="#B19AA5"
+                  maxLength={60}
+                  autoCapitalize="words"
+                />
+
+                <Text style={styles.inputLabel}>Categoría *</Text>
+                <View style={styles.categoryGrid}>
+                  {categorias.map((item) => (
+                    <TouchableOpacity
+                      key={item}
+                      style={[
+                        styles.categoryChip,
+                        categoria === item && styles.categoryChipSelected,
+                      ]}
+                      onPress={() => seleccionarCategoria(item)}
+                      activeOpacity={0.8}
+                    >
+                      <Text
+                        style={[
+                          styles.categoryChipText,
+                          categoria === item &&
+                            styles.categoryChipTextSelected,
+                        ]}
+                      >
+                        {item}
+                      </Text>
+                    </TouchableOpacity>
+                  ))}
+                </View>
+
+                <TouchableOpacity
+                  style={styles.addCategoryButton}
+                  onPress={() => setModalCategoriaVisible(true)}
+                >
+                  <MaterialCommunityIcons
+                    name="plus-circle-outline"
+                    size={19}
+                    color="#B83268"
+                  />
+                  <Text style={styles.addCategoryText}>
+                    Agregar categoría
+                  </Text>
+                </TouchableOpacity>
+              </View>
+
+              <View style={styles.formSection}>
+                <View style={styles.sectionHeadingRow}>
+                  <View style={styles.sectionIcon}>
+                    <MaterialCommunityIcons
+                      name="cash-multiple"
+                      size={20}
+                      color="#B83268"
+                    />
+                  </View>
+                  <View style={styles.sectionHeadingText}>
+                    <Text style={styles.sectionTitle}>
+                      Precios e inventario
+                    </Text>
+                    <Text style={styles.sectionSubtitle}>
+                      Configura los costos y el control de existencias
+                    </Text>
+                  </View>
+                </View>
+
+                <Text style={styles.inputLabel}>Precio de compra (C$) *</Text>
+                <TextInput
+                  style={styles.input}
+                  value={precioCompra}
+                  onChangeText={(valor) => setPrecioCompra(limpiarDecimal(valor))}
+                  placeholder="Ej. 250.00"
+                  placeholderTextColor="#B19AA5"
+                  keyboardType="decimal-pad"
+                  maxLength={12}
+                />
+
+                <Text style={styles.inputLabel}>
+                  Porcentaje de ganancia (%) *
+                </Text>
+                <TextInput
+                  style={styles.input}
+                  value={porcentajeGanancia}
+                  onChangeText={(valor) =>
+                    setPorcentajeGanancia(limpiarDecimal(valor))
+                  }
+                  placeholder="Ej. 30"
+                  placeholderTextColor="#B19AA5"
+                  keyboardType="decimal-pad"
+                  maxLength={7}
+                />
+
+                <Text style={styles.inputLabel}>Stock mínimo *</Text>
+                <TextInput
+                  style={styles.input}
+                  value={stockMinimo}
+                  onChangeText={(valor) => setStockMinimo(limpiarEntero(valor))}
+                  placeholder="Ej. 5"
+                  placeholderTextColor="#B19AA5"
+                  keyboardType="number-pad"
+                  maxLength={7}
+                />
+
+                {!requiereVariantes && (
+                  <>
+                    <Text style={styles.inputLabel}>Stock disponible *</Text>
+                    <TextInput
+                      style={styles.input}
+                      value={stockSimple}
+                      onChangeText={(valor) =>
+                        setStockSimple(limpiarEntero(valor))
+                      }
+                      placeholder="Ej. 10"
+                      placeholderTextColor="#B19AA5"
+                      keyboardType="number-pad"
+                      maxLength={7}
+                    />
+                    <Text style={styles.photoHint}>
+                      Para perfumes, accesorios y otros productos sin tallas,
+                      indica aquí las unidades disponibles.
+                    </Text>
+                  </>
                 )}
               </View>
 
-              <Text style={styles.label}>
-                Nombre del producto *
-              </Text>
+              {requiereVariantes && (
+                <View style={styles.formSection}>
+                  <View style={styles.variantSectionHeader}>
+                    <View style={styles.sectionHeadingRow}>
+                      <View style={styles.sectionIcon}>
+                        <MaterialCommunityIcons
+                          name="palette-outline"
+                          size={20}
+                          color="#B83268"
+                        />
+                      </View>
+                      <View style={styles.variantTitleContainer}>
+                        <Text style={styles.sectionTitle}>
+                          Variantes del producto
+                        </Text>
+                        <Text style={styles.sectionSubtitle}>
+                          Registra cada color, talla y cantidad. Puedes
+                          seleccionar una foto para cada variante.
+                        </Text>
+                      </View>
+                    </View>
 
-              <TextInput
-                style={styles.input}
-                value={nombre}
-                onChangeText={setNombre}
-                placeholder="Ej. Camisa manga corta"
-                placeholderTextColor="#A89AA1"
-                editable={!guardando}
-              />
-
-              <Text style={styles.label}>Código *</Text>
-
-              <TextInput
-                style={styles.input}
-                value={codigo}
-                onChangeText={setCodigo}
-                placeholder="Ej. CAM-001"
-                placeholderTextColor="#A89AA1"
-                editable={!guardando}
-              />
-
-              <Text style={styles.label}>Categoría *</Text>
-
-              <TouchableOpacity
-                style={styles.categorySelector}
-                onPress={() => setCategoriaModalVisible(true)}
-                disabled={guardando}
-              >
-                <Text
-                  style={[
-                    styles.categorySelectorText,
-                    !categoria && styles.placeholderText,
-                  ]}
-                >
-                  {categoria || 'Seleccionar categoría'}
-                </Text>
-
-                <MaterialCommunityIcons
-                  name="chevron-down"
-                  size={23}
-                  color="#8E3158"
-                />
-              </TouchableOpacity>
-
-              <Text style={styles.label}>Marca *</Text>
-
-              <TextInput
-                style={styles.input}
-                value={marca}
-                onChangeText={setMarca}
-                placeholder="Ej. Zara"
-                placeholderTextColor="#A89AA1"
-                editable={!guardando}
-              />
-
-              {permiteColor && (
-                <View style={styles.variantesSection}>
-                  <Text style={styles.variantesTitle}>
-                    {esCartera
-                      ? 'Colores disponibles'
-                      : 'Tallas, colores y existencias'}
-                  </Text>
-
-                  <Text style={styles.variantesDescription}>
-                    {esCartera
-                      ? 'Registra cada color disponible y la cantidad de carteras que tienes en ese color. El stock general se calculará automáticamente.'
-                      : 'Registra cada combinación de talla y color con su cantidad. El stock general será la suma de las cantidades registradas.'}
-                  </Text>
+                    <TouchableOpacity
+                      style={styles.addVariantButton}
+                      onPress={agregarVariante}
+                      disabled={guardando}
+                    >
+                      <MaterialCommunityIcons
+                        name="plus"
+                        size={21}
+                        color="#FFFFFF"
+                      />
+                    </TouchableOpacity>
+                  </View>
 
                   {variantes.map((variante, indice) => (
-                    <View
-                      key={`variante-${indice}`}
-                      style={styles.varianteCard}
-                    >
-                      <Text style={styles.varianteLabel}>
-                        {esCartera
-                          ? `Color ${indice + 1}`
-                          : `Variante ${indice + 1}`}
-                      </Text>
+                    <View key={`variante-${indice}`} style={styles.variantCard}>
+                      <View style={styles.variantCardHeader}>
+                        <View style={styles.variantNumberBadge}>
+                          <Text style={styles.variantNumberText}>
+                            {String(indice + 1).padStart(2, '0')}
+                          </Text>
+                        </View>
 
-                      {!esCartera && (
+                        <Text style={styles.variantLabel}>
+                          Variante {indice + 1}
+                        </Text>
+
+                        <TouchableOpacity
+                          style={styles.removeVariantButton}
+                          onPress={() => eliminarVariante(indice)}
+                          disabled={guardando}
+                        >
+                          <MaterialCommunityIcons
+                            name="trash-can-outline"
+                            size={20}
+                            color="#B32645"
+                          />
+                        </TouchableOpacity>
+                      </View>
+
+                      {!esCartera(categoria) && (
                         <>
-                          <Text style={styles.label}>Talla *</Text>
-
+                          <Text style={styles.inputLabel}>Talla *</Text>
                           <TextInput
                             style={styles.input}
                             value={variante.talla}
                             onChangeText={(valor) =>
-                              actualizarVariante(
-                                indice,
-                                'talla',
-                                valor
-                              )
+                              actualizarVariante(indice, 'talla', valor)
                             }
-                            placeholder="Ej. S, M, L, XL o Única"
-                            placeholderTextColor="#A89AA1"
-                            editable={!guardando}
+                            placeholder="Ej. S, M, L, XL, 38"
+                            placeholderTextColor="#B19AA5"
+                            maxLength={15}
+                            autoCapitalize="characters"
                           />
                         </>
                       )}
 
-                      <Text style={styles.label}>Color *</Text>
-
+                      <Text style={styles.inputLabel}>Color *</Text>
                       <TextInput
                         style={styles.input}
                         value={variante.color}
                         onChangeText={(valor) =>
-                          actualizarVariante(
-                            indice,
-                            'color',
-                            valor
-                          )
+                          actualizarVariante(indice, 'color', valor)
                         }
-                        placeholder="Ej. Negro, blanco, rosado"
-                        placeholderTextColor="#A89AA1"
-                        editable={!guardando}
+                        placeholder="Ej. Negro, Rojo, Azul"
+                        placeholderTextColor="#B19AA5"
+                        maxLength={30}
+                        autoCapitalize="words"
                       />
 
-                      <Text style={styles.label}>
-                        Cantidad disponible *
-                      </Text>
-
+                      <Text style={styles.inputLabel}>Stock de esta variante *</Text>
                       <TextInput
                         style={styles.input}
                         value={String(variante.stock)}
                         onChangeText={(valor) =>
-                          actualizarVariante(
-                            indice,
-                            'stock',
-                            valor
-                          )
+                          actualizarVariante(indice, 'stock', valor)
                         }
                         placeholder="0"
-                        placeholderTextColor="#A89AA1"
-                        keyboardType="numeric"
-                        editable={!guardando}
+                        placeholderTextColor="#B19AA5"
+                        keyboardType="number-pad"
+                        maxLength={7}
                       />
 
+                      <Text style={styles.inputLabel}>
+                        Foto de esta variante
+                      </Text>
                       <TouchableOpacity
-                        style={styles.removeVariantButton}
-                        onPress={() => eliminarVariante(indice)}
+                        style={styles.variantePhotoButton}
+                        onPress={() => seleccionarFotoVariante(indice)}
                         disabled={guardando}
+                        activeOpacity={0.85}
                       >
-                        <MaterialCommunityIcons
-                          name="delete-outline"
-                          size={18}
-                          color="#B9366D"
-                        />
-
-                        <Text style={styles.removeVariantText}>
-                          Eliminar {esCartera ? 'color' : 'variante'}
-                        </Text>
+                        {variante.imagenUri ? (
+                          <Image
+                            source={{ uri: variante.imagenUri }}
+                            style={styles.variantePreviewImage}
+                            resizeMode="cover"
+                          />
+                        ) : (
+                          <View style={styles.variantePhotoPlaceholder}>
+                            <View style={styles.variantCameraCircle}>
+                              <MaterialCommunityIcons
+                                name="camera-plus-outline"
+                                size={25}
+                                color="#B83268"
+                              />
+                            </View>
+                            <Text style={styles.variantePhotoText}>
+                              Agregar foto para {variante.color || 'este color'}
+                            </Text>
+                            <Text style={styles.photoHint}>
+                              Toca aquí para seleccionar
+                            </Text>
+                          </View>
+                        )}
                       </TouchableOpacity>
                     </View>
                   ))}
 
-                  <TouchableOpacity
-                    style={styles.addVariantButton}
-                    onPress={agregarVariante}
-                    disabled={guardando}
-                  >
-                    <MaterialCommunityIcons
-                      name="plus-circle-outline"
-                      size={21}
-                      color="#B9366D"
-                    />
-
-                    <Text style={styles.addVariantText}>
-                      {esCartera
-                        ? 'Agregar color'
-                        : 'Agregar talla y color'}
-                    </Text>
-                  </TouchableOpacity>
-
-                  <Text style={styles.stockTotalText}>
-                    Stock total:{' '}
-                    {variantes.reduce(
-                      (total, variante) =>
-                        total +
-                        Math.max(
-                          0,
-                          Math.floor(Number(variante.stock) || 0)
-                        ),
-                      0
-                    )}
-                  </Text>
+                  <View style={styles.stockTotalCard}>
+                    <View style={styles.stockTotalIcon}>
+                      <MaterialCommunityIcons
+                        name="package-variant"
+                        size={21}
+                        color="#B83268"
+                      />
+                    </View>
+                    <View style={styles.stockTotalInfo}>
+                      <Text style={styles.stockTotalLabel}>Stock total</Text>
+                      <Text style={styles.stockTotalDescription}>
+                        Unidades registradas en las variantes
+                      </Text>
+                    </View>
+                    <Text style={styles.stockTotalValue}>{formatoCantidad(stockCalculado)}</Text>
+                  </View>
                 </View>
               )}
 
-              <Text style={styles.label}>
-                Precio de compra *
-              </Text>
-
-              <TextInput
-                style={styles.input}
-                value={precioCompra}
-                onChangeText={setPrecioCompra}
-                placeholder="0.00"
-                placeholderTextColor="#A89AA1"
-                keyboardType="decimal-pad"
-                editable={!guardando}
-              />
-
-              <Text style={styles.label}>
-                Porcentaje de ganancia *
-              </Text>
-
-              <TextInput
-                style={styles.input}
-                value={porcentajeGanancia}
-                onChangeText={setPorcentajeGanancia}
-                placeholder="Ej. 30"
-                placeholderTextColor="#A89AA1"
-                keyboardType="decimal-pad"
-                editable={!guardando}
-              />
-
-              {precioCompra.trim() !== '' &&
-                porcentajeGanancia.trim() !== '' &&
-                Number.isFinite(Number(precioCompra)) &&
-                Number.isFinite(Number(porcentajeGanancia)) && (
-                  <View style={styles.calculatedBox}>
-                    <Text style={styles.calculatedLabel}>
-                      Precio de venta:
+              <View style={styles.pricePreviewCard}>
+                <View style={styles.pricePreviewTop}>
+                  <View style={styles.pricePreviewIcon}>
+                    <MaterialCommunityIcons
+                      name="calculator-variant-outline"
+                      size={22}
+                      color="#B83268"
+                    />
+                  </View>
+                  <View style={styles.pricePreviewInfo}>
+                    <Text style={styles.pricePreviewLabel}>
+                      Precio de venta calculado
                     </Text>
-
-                    <Text style={styles.calculatedValue}>
-                      C${' '}
-                      {(
-                        Number(precioCompra) +
-                        (Number(precioCompra) *
-                          Number(porcentajeGanancia)) /
-                          100
-                      ).toFixed(2)}
+                    <Text style={styles.pricePreviewHint}>
+                      Incluye el porcentaje de ganancia
                     </Text>
                   </View>
-                )}
+                </View>
 
-              <Text style={styles.label}>
-                Stock general {!variantes.length ? '*' : ''}
-              </Text>
-
-              <Text style={styles.stockDescription}>
-                {variantes.length > 0 && permiteColor
-                  ? 'Se calcula automáticamente sumando las cantidades de las variantes.'
-                  : 'Ingresa la cantidad total disponible del producto.'}
-              </Text>
-
-              <TextInput
-                style={[
-                  styles.input,
-                  variantes.length > 0 &&
-                    permiteColor &&
-                    styles.inputDisabled,
-                ]}
-                value={
-                  variantes.length > 0 && permiteColor
-                    ? String(
-                        variantes.reduce(
-                          (total, variante) =>
-                            total +
-                            Math.max(
-                              0,
-                              Math.floor(
-                                Number(variante.stock) || 0
-                              )
-                            ),
-                          0
-                        )
-                      )
-                    : stock
-                }
-                onChangeText={setStock}
-                placeholder="0"
-                placeholderTextColor="#A89AA1"
-                keyboardType="numeric"
-                editable={
-                  !guardando &&
-                  !(variantes.length > 0 && permiteColor)
-                }
-              />
-
-              <Text style={styles.label}>Stock mínimo *</Text>
-
-              <TextInput
-                style={styles.input}
-                value={stockMinimo}
-                onChangeText={setStockMinimo}
-                placeholder="0"
-                placeholderTextColor="#A89AA1"
-                keyboardType="numeric"
-                editable={!guardando}
-              />
+                <Text style={styles.pricePreviewValue}>
+                  C$ {Number.isFinite(precioVentaVista)
+                    ? formatoDinero(precioVentaVista)
+                    : formatoDinero(0)}
+                </Text>
+              </View>
 
               <TouchableOpacity
                 style={[
@@ -1639,256 +1730,97 @@ export default function Productos() {
                 ]}
                 onPress={guardarProducto}
                 disabled={guardando}
+                activeOpacity={0.85}
               >
                 {guardando ? (
-                  <>
-                    <ActivityIndicator
-                      size="small"
-                      color="#FFFFFF"
-                    />
-
-                    <Text style={styles.saveButtonText}>
-                      Guardando...
-                    </Text>
-                  </>
+                  <ActivityIndicator color="#FFFFFF" />
                 ) : (
                   <>
                     <MaterialCommunityIcons
-                      name="content-save"
+                      name="content-save-outline"
                       size={21}
                       color="#FFFFFF"
                     />
-
                     <Text style={styles.saveButtonText}>
                       {productoEditando
-                        ? 'Actualizar producto'
-                        : 'Guardar producto'}
+                        ? 'Guardar cambios'
+                        : 'Registrar producto'}
                     </Text>
                   </>
                 )}
               </TouchableOpacity>
 
-              <View style={{ height: 30 }} />
+              <TouchableOpacity
+                style={styles.cancelButton}
+                onPress={() => setModalProductoVisible(false)}
+                disabled={guardando}
+                activeOpacity={0.8}
+              >
+                <Text style={styles.cancelButtonText}>Cancelar</Text>
+              </TouchableOpacity>
             </ScrollView>
           </View>
         </View>
       </Modal>
 
-      {/* MODAL DE CATEGORÍAS */}
-
       <Modal
-        visible={categoriaModalVisible}
-        animationType="fade"
+        visible={modalCategoriaVisible}
         transparent
-        onRequestClose={() => setCategoriaModalVisible(false)}
+        animationType="fade"
+        onRequestClose={() => setModalCategoriaVisible(false)}
       >
-        <View style={styles.categoryModalOverlay}>
-          <View style={styles.categoryModal}>
-            <View style={styles.categoryModalHeader}>
-              <Text style={styles.categoryModalTitle}>
-                Seleccionar categoría
-              </Text>
-
-              <TouchableOpacity
-                onPress={() => setCategoriaModalVisible(false)}
-              >
-                <MaterialCommunityIcons
-                  name="close"
-                  size={25}
-                  color="#8E3158"
-                />
-              </TouchableOpacity>
-            </View>
-
-            <ScrollView
-              style={styles.categoriesList}
-              showsVerticalScrollIndicator={false}
-            >
-              {categorias.map((item, index) => (
-                <TouchableOpacity
-                  key={`${item}-${index}`}
-                  style={[
-                    styles.categoryItem,
-                    categoria === item &&
-                      styles.selectedCategoryItem,
-                  ]}
-                  onPress={() => seleccionarCategoria(item)}
-                >
-                  <Text
-                    style={[
-                      styles.categoryItemText,
-                      categoria === item &&
-                        styles.selectedCategoryText,
-                    ]}
-                  >
-                    {item}
-                  </Text>
-
-                  {categoria === item && (
-                    <MaterialCommunityIcons
-                      name="check-circle"
-                      size={21}
-                      color="#D63384"
-                    />
-                  )}
-                </TouchableOpacity>
-              ))}
-            </ScrollView>
-
-            <View style={styles.newCategorySection}>
-              <Text style={styles.newCategoryTitle}>
-                Agregar nueva categoría
-              </Text>
-
-              <TextInput
-                style={styles.newCategoryInput}
-                value={nuevaCategoria}
-                onChangeText={setNuevaCategoria}
-                placeholder="Ej. Vestidos"
-                placeholderTextColor="#A89AA1"
+        <View style={styles.modalOverlay}>
+          <View style={styles.categoryModalContent}>
+            <View style={styles.categoryModalIcon}>
+              <MaterialCommunityIcons
+                name="shape-plus"
+                size={27}
+                color="#B83268"
               />
-
-              <TouchableOpacity
-                style={styles.newCategoryButton}
-                onPress={agregarNuevaCategoria}
-              >
-                <MaterialCommunityIcons
-                  name="plus"
-                  size={20}
-                  color="#FFFFFF"
-                />
-
-                <Text style={styles.newCategoryButtonText}>
-                  Agregar categoría
-                </Text>
-              </TouchableOpacity>
-            </View>
-          </View>
-        </View>
-      </Modal>
-
-      {/* MODAL PARA CLASIFICAR PRODUCTOS EXISTENTES */}
-
-      <Modal
-        visible={modalClasificarVisible}
-        animationType="fade"
-        transparent
-        onRequestClose={cerrarClasificador}
-      >
-        <View style={styles.categoryModalOverlay}>
-          <View style={styles.classificationModal}>
-            <View style={styles.categoryModalHeader}>
-              <View style={styles.classificationTitleContainer}>
-                <Text style={styles.categoryModalTitle}>
-                  Cambiar categoría
-                </Text>
-
-                {productoCategoriaEditando && (
-                  <Text
-                    style={styles.classificationProductName}
-                    numberOfLines={2}
-                  >
-                    {productoCategoriaEditando.nombre}
-                  </Text>
-                )}
-              </View>
-
-              <TouchableOpacity
-                onPress={cerrarClasificador}
-                disabled={cambiandoCategoria}
-              >
-                <MaterialCommunityIcons
-                  name="close"
-                  size={25}
-                  color="#8E3158"
-                />
-              </TouchableOpacity>
             </View>
 
-            <Text style={styles.classificationInstruction}>
-              Selecciona la categoría correcta para este producto.
+            <Text style={styles.modalTitle}>Nueva categoría</Text>
+            <Text style={styles.categoryModalSubtitle}>
+              Agrega una categoría para organizar tus productos.
             </Text>
 
-            <ScrollView
-              style={styles.classificationList}
-              showsVerticalScrollIndicator={false}
+            <TextInput
+              style={styles.input}
+              value={nuevaCategoria}
+              onChangeText={(valor) =>
+                setNuevaCategoria(
+                  valor.replace(
+                    /[^\p{L}\p{M}0-9 &'-]/gu,
+                    '',
+                  ),
+                )
+              }
+              placeholder="Nombre de la categoría"
+              placeholderTextColor="#B19AA5"
+              autoCapitalize="words"
+              maxLength={40}
+            />
+
+            <TouchableOpacity
+              style={styles.saveButton}
+              onPress={agregarCategoria}
+              activeOpacity={0.85}
             >
-              {categorias.map((item, index) => {
-                const seleccionada =
-                  productoCategoriaEditando?.categoria?.toLowerCase() ===
-                  item.toLowerCase();
+              <MaterialCommunityIcons
+                name="plus"
+                size={19}
+                color="#FFFFFF"
+              />
+              <Text style={styles.saveButtonText}>Agregar categoría</Text>
+            </TouchableOpacity>
 
-                return (
-                  <TouchableOpacity
-                    key={`clasificar-${item}-${index}`}
-                    style={[
-                      styles.classificationItem,
-                      seleccionada &&
-                        styles.selectedClassificationItem,
-                    ]}
-                    onPress={() =>
-                      cambiarCategoriaProducto(item)
-                    }
-                    disabled={cambiandoCategoria}
-                  >
-                    <View style={styles.classificationItemLeft}>
-                      <View
-                        style={[
-                          styles.categoryIcon,
-                          seleccionada &&
-                            styles.categoryIconSelected,
-                        ]}
-                      >
-                        <MaterialCommunityIcons
-                          name="tag-outline"
-                          size={20}
-                          color={
-                            seleccionada ? '#FFFFFF' : '#D63384'
-                          }
-                        />
-                      </View>
-
-                      <Text
-                        style={[
-                          styles.classificationItemText,
-                          seleccionada &&
-                            styles.selectedClassificationText,
-                        ]}
-                      >
-                        {item}
-                      </Text>
-                    </View>
-
-                    {seleccionada ? (
-                      <MaterialCommunityIcons
-                        name="check-circle"
-                        size={23}
-                        color="#D63384"
-                      />
-                    ) : (
-                      <MaterialCommunityIcons
-                        name="chevron-right"
-                        size={21}
-                        color="#B59AA8"
-                      />
-                    )}
-                  </TouchableOpacity>
-                );
-              })}
-            </ScrollView>
-
-            {cambiandoCategoria && (
-              <View style={styles.changingCategoryContainer}>
-                <ActivityIndicator
-                  size="small"
-                  color="#D63384"
-                />
-
-                <Text style={styles.changingCategoryText}>
-                  Actualizando categoría...
-                </Text>
-              </View>
-            )}
+            <TouchableOpacity
+              style={styles.cancelButton}
+              onPress={() => setModalCategoriaVisible(false)}
+              activeOpacity={0.8}
+            >
+              <Text style={styles.cancelButtonText}>Cancelar</Text>
+            </TouchableOpacity>
           </View>
         </View>
       </Modal>
@@ -1896,904 +1828,612 @@ export default function Productos() {
   );
 }
 
-// ESTILOS
-
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: '#FCE7F0',
-  },
-
+  container: { flex: 1, backgroundColor: '#FAF7F9' },
   header: {
-    minHeight: 76,
     flexDirection: 'row',
     alignItems: 'center',
-    paddingHorizontal: 18,
-    paddingVertical: 12,
-    backgroundColor: '#FFFFFF',
+    backgroundColor: '#FFF5F8',
+    paddingHorizontal: 17,
+    paddingVertical: 16,
     borderBottomWidth: 1,
-    borderBottomColor: '#F3D6E4',
+    borderBottomColor: '#F0E1E8',
   },
-
-  headerButton: {
+  backButton: {
     width: 42,
     height: 42,
     borderRadius: 14,
-    backgroundColor: '#FCE7F0',
-    justifyContent: 'center',
     alignItems: 'center',
+    justifyContent: 'center',
+    marginRight: 12,
+    backgroundColor: '#FFFFFF',
+    borderWidth: 1,
+    borderColor: '#F0E1E8',
   },
-
-  headerTextContainer: {
-    flex: 1,
-    marginLeft: 12,
-  },
-
-  headerTitle: {
-    fontSize: 22,
+  headerTextContainer: { flex: 1 },
+  headerEyebrow: {
+    fontSize: 9,
     fontWeight: '800',
-    color: '#54253B',
+    letterSpacing: 1.5,
+    color: '#B83268',
+    marginBottom: 3,
   },
-
-  headerSubtitle: {
-    fontSize: 12,
-    color: '#9D7187',
-    marginTop: 2,
+  headerTitle: {
+    fontSize: 24,
+    fontWeight: '800',
+    color: '#442333',
+    letterSpacing: -0.5,
   },
-
-  addHeaderButton: {
-    width: 44,
-    height: 44,
+  headerSubtitle: { marginTop: 3, fontSize: 12, color: '#8B7180' },
+  addButton: {
+    width: 45,
+    height: 45,
     borderRadius: 15,
-    backgroundColor: '#D63384',
-    justifyContent: 'center',
+    backgroundColor: '#B83268',
     alignItems: 'center',
+    justifyContent: 'center',
+    marginLeft: 10,
+    elevation: 3,
+    shadowColor: '#9C2856',
+    shadowOffset: { width: 0, height: 3 },
+    shadowOpacity: 0.2,
+    shadowRadius: 5,
   },
-
   loadingContainer: {
     flex: 1,
-    justifyContent: 'center',
     alignItems: 'center',
+    justifyContent: 'center',
   },
-
   loadingText: {
     marginTop: 12,
+    color: '#80596D',
     fontSize: 14,
-    color: '#8E3158',
+    fontWeight: '500',
   },
-
-  productosContainer: {
-    paddingHorizontal: 17,
-    paddingTop: 18,
-    paddingBottom: 35,
-  },
-
-  welcomeCard: {
+  productList: { padding: 17, paddingBottom: 35 },
+  summaryCard: {
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'space-between',
-    padding: 20,
-    borderRadius: 23,
-    backgroundColor: '#FCE7F0',
+    padding: 17,
+    marginBottom: 25,
+    backgroundColor: '#FFFFFF',
+    borderRadius: 18,
     borderWidth: 1,
-    borderColor: '#F3D6E4',
-    marginBottom: 24,
+    borderColor: '#F0E4EA',
+    elevation: 2,
+    shadowColor: '#6D304B',
+    shadowOffset: { width: 0, height: 3 },
+    shadowOpacity: 0.045,
+    shadowRadius: 8,
   },
-
-  welcomeTextContainer: {
-    flex: 1,
-    paddingRight: 8,
-  },
-
-  welcomeEyebrow: {
-    fontSize: 10,
-    fontWeight: '800',
-    letterSpacing: 1.2,
-    color: '#B83270',
-    marginBottom: 9,
-  },
-
-  welcomeTitle: {
-    fontSize: 22,
-    fontWeight: '800',
-    color: '#54253B',
-  },
-
-  welcomeTitleAccent: {
-    fontSize: 22,
-    fontWeight: '800',
-    color: '#D63384',
-  },
-
-  welcomeDescription: {
-    fontSize: 12,
-    color: '#805B6E',
-    lineHeight: 18,
-    marginTop: 8,
-  },
-
-  welcomeIcon: {
-    width: 62,
-    height: 62,
-    borderRadius: 20,
-    backgroundColor: '#E9A8C6',
+  summaryIcon: {
+    width: 51,
+    height: 51,
+    borderRadius: 16,
     alignItems: 'center',
     justifyContent: 'center',
+    backgroundColor: '#FCEAF1',
   },
-
-  sectionHeading: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    marginBottom: 15,
-  },
-
-  sectionTitle: {
-    fontSize: 21,
-    fontWeight: '800',
-    color: '#54253B',
-  },
-
-  sectionSubtitle: {
-    fontSize: 12,
-    color: '#987D8C',
-    marginTop: 4,
-  },
-
-  countBadge: {
-    minWidth: 38,
-    height: 38,
+  summaryTextContainer: { flex: 1, marginLeft: 13 },
+  summaryLabel: { fontSize: 14, fontWeight: '800', color: '#49303D' },
+  summaryDescription: { marginTop: 4, fontSize: 11, color: '#9B8290' },
+  summaryNumberContainer: {
+    minWidth: 48,
+    minHeight: 43,
     borderRadius: 13,
-    backgroundColor: '#FCE7F0',
     alignItems: 'center',
     justifyContent: 'center',
+    backgroundColor: '#FFF0F5',
     paddingHorizontal: 10,
   },
-
-  countBadgeText: {
-    color: '#A62965',
-    fontSize: 14,
-    fontWeight: '800',
-  },
-
-  emptyContainer: {
+  summaryValue: { fontSize: 22, fontWeight: '800', color: '#B83268' },
+  listHeading: {
+    flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'center',
-    paddingHorizontal: 22,
-    paddingTop: 35,
-    paddingBottom: 40,
-    backgroundColor: '#FFFFFF',
-    borderRadius: 22,
-    borderWidth: 1,
-    borderColor: '#F3D6E4',
+    justifyContent: 'space-between',
+    marginBottom: 14,
   },
-
-  emptyIconCircle: {
-    width: 84,
-    height: 84,
-    borderRadius: 28,
-    backgroundColor: '#FCE7F0',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-
-  emptyTitle: {
+  listTitle: {
     fontSize: 19,
     fontWeight: '800',
-    color: '#54253B',
-    marginTop: 16,
+    color: '#442333',
+    letterSpacing: -0.3,
   },
-
-  emptyText: {
-    fontSize: 13,
-    color: '#987D8C',
-    textAlign: 'center',
-    lineHeight: 20,
-    marginTop: 8,
-  },
-
-  addButton: {
-    flexDirection: 'row',
+  listSubtitle: { marginTop: 4, fontSize: 12, color: '#947A88' },
+  countBadge: {
+    minWidth: 34,
+    height: 31,
+    paddingHorizontal: 9,
+    borderRadius: 10,
+    backgroundColor: '#FCEAF1',
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: '#D63384',
-    paddingHorizontal: 20,
-    paddingVertical: 13,
-    borderRadius: 14,
-    marginTop: 22,
   },
-
-  addButtonText: {
-    color: '#FFFFFF',
-    fontSize: 14,
-    fontWeight: '800',
-    marginLeft: 8,
-  },
-
-  productCard: {
+  countBadgeText: { color: '#B83268', fontWeight: '800', fontSize: 13 },
+  emptyContainer: {
+    alignItems: 'center',
+    paddingHorizontal: 24,
+    paddingVertical: 40,
     backgroundColor: '#FFFFFF',
     borderRadius: 20,
-    padding: 13,
-    marginBottom: 14,
     borderWidth: 1,
-    borderColor: '#F3D6E4',
+    borderColor: '#F0E4EA',
   },
-
-  productCardTop: {
-    flexDirection: 'row',
-    alignItems: 'flex-start',
-  },
-
-  imageContainer: {
-    width: 88,
-    height: 100,
-    borderRadius: 15,
-    backgroundColor: '#FCE7F0',
-    justifyContent: 'center',
+  emptyIconContainer: {
+    width: 85,
+    height: 85,
+    borderRadius: 26,
+    backgroundColor: '#FCEAF1',
     alignItems: 'center',
-    overflow: 'hidden',
+    justifyContent: 'center',
   },
-
+  emptyTitle: {
+    marginTop: 18,
+    fontSize: 18,
+    fontWeight: '800',
+    color: '#442333',
+    textAlign: 'center',
+  },
+  emptyText: {
+    marginTop: 9,
+    fontSize: 13,
+    color: '#8F7784',
+    textAlign: 'center',
+    lineHeight: 21,
+  },
+  primaryButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    marginTop: 22,
+    backgroundColor: '#B83268',
+    paddingHorizontal: 21,
+    paddingVertical: 13,
+    borderRadius: 13,
+  },
+  primaryButtonText: { color: '#FFFFFF', fontWeight: '800', fontSize: 13 },
+  productCard: {
+    flexDirection: 'row',
+    padding: 11,
+    marginBottom: 14,
+    backgroundColor: '#FFFFFF',
+    borderRadius: 18,
+    borderWidth: 1,
+    borderColor: '#EEE2E8',
+    elevation: 2,
+    shadowColor: '#6D304B',
+    shadowOffset: { width: 0, height: 3 },
+    shadowOpacity: 0.045,
+    shadowRadius: 7,
+  },
+  productImageContainer: {
+    width: 112,
+    height: 151,
+    borderRadius: 13,
+    overflow: 'hidden',
+    backgroundColor: '#F8EDF2',
+  },
   productImage: {
     width: '100%',
     height: '100%',
+    backgroundColor: '#F8EDF2',
   },
-
-  productInfo: {
-    flex: 1,
-    paddingHorizontal: 11,
+  imagePlaceholder: { alignItems: 'center', justifyContent: 'center' },
+  categoryBadge: {
+    position: 'absolute',
+    left: 5,
+    right: 5,
+    bottom: 5,
+    paddingHorizontal: 7,
+    paddingVertical: 5,
+    borderRadius: 7,
+    backgroundColor: 'rgba(255,255,255,0.94)',
   },
-
+  categoryBadgeText: {
+    textAlign: 'center',
+    fontSize: 9,
+    fontWeight: '800',
+    color: '#8F2C58',
+  },
+  productInfo: { flex: 1, marginLeft: 12, paddingVertical: 2 },
   productName: {
     fontSize: 15,
     lineHeight: 20,
     fontWeight: '800',
-    color: '#54253B',
+    color: '#442333',
   },
-
-  productCode: {
-    fontSize: 11,
-    color: '#A08897',
-    marginTop: 5,
-  },
-
-  categoryChangeButton: {
+  productMeta: { marginTop: 4, fontSize: 11, color: '#927B88' },
+  brandRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    alignSelf: 'flex-start',
-    backgroundColor: '#FCE7F0',
-    borderRadius: 8,
-    paddingHorizontal: 7,
-    paddingVertical: 5,
-    marginTop: 8,
-    maxWidth: '100%',
+    gap: 4,
+    marginTop: 2,
   },
-
-  productCategory: {
-    fontSize: 10,
-    color: '#C02670',
-    fontWeight: '800',
-    marginHorizontal: 4,
-    flexShrink: 1,
-  },
-
-  productBrand: {
-    fontSize: 11,
-    color: '#8D7382',
-    marginTop: 6,
-  },
-
-  actions: {
-    justifyContent: 'flex-start',
-    alignItems: 'center',
-    gap: 8,
-  },
-
-  editButton: {
-    width: 35,
-    height: 35,
-    borderRadius: 12,
-    backgroundColor: '#FCE7F0',
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-
-  deleteButton: {
-    width: 35,
-    height: 35,
-    borderRadius: 12,
-    backgroundColor: '#FFF5F7',
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-
-  productDivider: {
-    height: 1,
-    backgroundColor: '#F3E7ED',
-    marginVertical: 13,
-  },
-
-  productMetrics: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    gap: 10,
-  },
-
-  priceMetric: {
-    flex: 1,
-  },
-
-  stockMetric: {
-    alignItems: 'flex-end',
-  },
-
-  metricLabel: {
-    fontSize: 11,
-    color: '#A08897',
-    marginBottom: 5,
-  },
-
-  price: {
-    fontSize: 17,
-    fontWeight: '800',
-    color: '#8E3158',
-  },
-
+  productPrice: { marginTop: 8, fontSize: 17, fontWeight: '800', color: '#B83268' },
   stockBadge: {
     flexDirection: 'row',
     alignItems: 'center',
+    alignSelf: 'flex-start',
+    marginTop: 7,
     paddingHorizontal: 8,
-    paddingVertical: 6,
-    borderRadius: 9,
+    paddingVertical: 5,
+    borderRadius: 8,
+    backgroundColor: '#EAF7EF',
+  },
+  stockBadgeLow: { backgroundColor: '#FFF0F0' },
+  stockDot: {
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+    backgroundColor: '#2E9158',
+    marginRight: 5,
+  },
+  stockDotLow: { backgroundColor: '#C73543' },
+  stockText: { fontSize: 10, fontWeight: '700', color: '#267D4B' },
+  lowStockText: { color: '#BD2C3B' },
+  variantCountRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginTop: 6,
     gap: 4,
   },
-
-  stockBadgeLow: {
-    backgroundColor: '#FFF1D6',
+  variantCount: { fontSize: 10, color: '#8F7181' },
+  productActions: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    marginTop: 10,
+    gap: 7,
   },
-
-  stockBadgeOk: {
-    backgroundColor: '#E7F7ED',
-  },
-
-  stock: {
-    fontSize: 11,
-    fontWeight: '800',
-  },
-
-  stockLow: {
-    color: '#B45309',
-  },
-
-  stockNormal: {
-    color: '#18794E',
-  },
-
-  lowStockNotice: {
+  editButton: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 6,
-    backgroundColor: '#FFF7E8',
+    justifyContent: 'center',
+    backgroundColor: '#B83268',
+    paddingHorizontal: 11,
+    paddingVertical: 8,
     borderRadius: 9,
-    padding: 9,
-    marginTop: 12,
   },
-
-  lowStockNoticeText: {
-    color: '#9A5B13',
-    fontSize: 11,
-    fontWeight: '600',
-    flexShrink: 1,
-  },
-
-  variantSummaryContainer: {
+  deleteButton: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 5,
-    marginTop: 11,
+    justifyContent: 'center',
+    backgroundColor: '#FFF1F2',
+    borderWidth: 1,
+    borderColor: '#F4D8DC',
+    paddingHorizontal: 9,
+    paddingVertical: 8,
+    borderRadius: 9,
   },
-
-  variantSummary: {
-    fontSize: 11,
-    color: '#A34C76',
-    fontWeight: '700',
-  },
-
-  footerText: {
-    color: '#B59AA8',
-    textAlign: 'center',
-    fontSize: 9,
+  actionButtonText: {
+    marginLeft: 4,
+    fontSize: 10,
     fontWeight: '800',
-    letterSpacing: 1.2,
-    marginTop: 13,
-    marginBottom: 10,
+    color: '#FFFFFF',
   },
-
-  // MODAL DE PRODUCTO
-
+  deleteButtonText: {
+    marginLeft: 4,
+    fontSize: 10,
+    fontWeight: '800',
+    color: '#B32645',
+  },
   modalOverlay: {
     flex: 1,
-    backgroundColor: 'rgba(55, 20, 39, 0.48)',
-    justifyContent: 'flex-end',
+    justifyContent: 'center',
+    backgroundColor: 'rgba(42, 21, 32, 0.57)',
+    padding: 12,
   },
-
-  modalContainer: {
-    backgroundColor: '#FFFFFF',
-    borderTopLeftRadius: 25,
-    borderTopRightRadius: 25,
+  modalContent: {
     maxHeight: '94%',
-    paddingTop: 8,
+    backgroundColor: '#FAF7F9',
+    borderRadius: 22,
+    overflow: 'hidden',
   },
-
   modalHeader: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    paddingHorizontal: 20,
-    paddingVertical: 15,
-    borderBottomWidth: 1,
-    borderBottomColor: '#F3D6E4',
-  },
-
-  modalTitle: {
-    fontSize: 21,
-    fontWeight: '800',
-    color: '#54253B',
-  },
-
-  modalCloseButton: {
-    width: 37,
-    height: 37,
-    borderRadius: 12,
-    backgroundColor: '#FCE7F0',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-
-  formContainer: {
-    paddingHorizontal: 20,
-    paddingTop: 10,
-  },
-
-  photoSection: {
-    alignItems: 'center',
-    marginBottom: 18,
-  },
-
-  photoButton: {
-    width: 130,
-    height: 130,
-    borderRadius: 18,
-    borderWidth: 1.5,
-    borderColor: '#E7A3C2',
-    borderStyle: 'dashed',
-    justifyContent: 'center',
-    alignItems: 'center',
-    overflow: 'hidden',
-    backgroundColor: '#FCE7F0',
-  },
-
-  previewImage: {
-    width: '100%',
-    height: '100%',
-  },
-
-  photoText: {
-    fontSize: 13,
-    color: '#C02670',
-    fontWeight: '700',
-    marginTop: 7,
-  },
-
-  changePhotoButton: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: '#D63384',
-    paddingHorizontal: 15,
-    paddingVertical: 9,
-    borderRadius: 11,
-    marginTop: 10,
-  },
-
-  changePhotoText: {
-    color: '#FFFFFF',
-    fontSize: 13,
-    fontWeight: '700',
-    marginLeft: 6,
-  },
-
-  label: {
-    fontSize: 13,
-    fontWeight: '700',
-    color: '#75435C',
-    marginBottom: 7,
-    marginTop: 12,
-  },
-
-  input: {
-    minHeight: 48,
-    borderWidth: 1,
-    borderColor: '#EBD9E2',
-    borderRadius: 12,
-    paddingHorizontal: 14,
-    fontSize: 14,
-    color: '#54253B',
-    backgroundColor: '#FFFCFD',
-  },
-
-  inputDisabled: {
-    backgroundColor: '#F7F0F4',
-    color: '#8D7382',
-  },
-
-  categorySelector: {
-    minHeight: 48,
-    borderWidth: 1,
-    borderColor: '#EBD9E2',
-    borderRadius: 12,
-    paddingHorizontal: 14,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    backgroundColor: '#FFFCFD',
-  },
-
-  categorySelectorText: {
-    fontSize: 14,
-    color: '#54253B',
-  },
-
-  placeholderText: {
-    color: '#A89AA1',
-  },
-
-  calculatedBox: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    backgroundColor: '#FCE7F0',
-    borderRadius: 12,
-    paddingHorizontal: 14,
-    paddingVertical: 13,
-    marginTop: 12,
-  },
-
-  calculatedLabel: {
-    fontSize: 13,
-    color: '#805B6E',
-  },
-
-  calculatedValue: {
-    fontSize: 17,
-    fontWeight: '800',
-    color: '#8E3158',
-  },
-
-  stockDescription: {
-    fontSize: 12,
-    color: '#987D8C',
-    marginBottom: 8,
-    lineHeight: 18,
-  },
-
-  // VARIANTES
-
-  variantesSection: {
-    marginTop: 18,
-    marginBottom: 8,
-    padding: 14,
-    backgroundColor: '#FCE7F0',
-    borderRadius: 16,
-    borderWidth: 1,
-    borderColor: '#F0C9DB',
-  },
-
-  variantesTitle: {
-    fontSize: 15,
-    fontWeight: '800',
-    color: '#8E3158',
-  },
-
-  variantesDescription: {
-    fontSize: 12,
-    color: '#8D7382',
-    marginTop: 5,
-    marginBottom: 10,
-    lineHeight: 18,
-  },
-
-  varianteCard: {
-    padding: 12,
+    paddingHorizontal: 19,
+    paddingVertical: 17,
     backgroundColor: '#FFFFFF',
-    borderRadius: 13,
-    borderWidth: 1,
-    borderColor: '#F1D3E0',
-    marginBottom: 10,
+    borderBottomWidth: 1,
+    borderBottomColor: '#F0E4EA',
   },
-
-  varianteLabel: {
-    fontSize: 13,
+  modalHeadingText: { flex: 1 },
+  modalEyebrow: {
+    fontSize: 9,
     fontWeight: '800',
-    color: '#8E3158',
+    letterSpacing: 1.5,
+    color: '#B83268',
     marginBottom: 4,
   },
-
-  addVariantButton: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 7,
-    padding: 12,
-    borderWidth: 1,
-    borderColor: '#D63384',
-    borderRadius: 12,
-    backgroundColor: '#FFFFFF',
-  },
-
-  addVariantText: {
-    color: '#B9366D',
-    fontSize: 13,
-    fontWeight: '800',
-  },
-
-  removeVariantButton: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-    alignSelf: 'flex-end',
-    marginTop: 10,
-    padding: 6,
-  },
-
-  removeVariantText: {
-    color: '#B9366D',
-    fontSize: 12,
-    fontWeight: '700',
-  },
-
-  stockTotalText: {
-    marginTop: 10,
-    color: '#8E3158',
-    fontSize: 12,
-    fontWeight: '800',
-  },
-
-  saveButton: {
-    minHeight: 52,
-    borderRadius: 14,
-    backgroundColor: '#D63384',
-    flexDirection: 'row',
-    justifyContent: 'center',
-    alignItems: 'center',
-    marginTop: 28,
-    marginBottom: 20,
-  },
-
-  saveButtonDisabled: {
-    opacity: 0.7,
-  },
-
-  saveButtonText: {
-    color: '#FFFFFF',
-    fontSize: 15,
-    fontWeight: '800',
-    marginLeft: 8,
-  },
-
-  // MODAL CATEGORÍAS
-
-  categoryModalOverlay: {
-    flex: 1,
-    backgroundColor: 'rgba(55, 20, 39, 0.48)',
-    justifyContent: 'center',
-    alignItems: 'center',
-    paddingHorizontal: 20,
-  },
-
-  categoryModal: {
-    width: '100%',
-    maxHeight: '80%',
-    backgroundColor: '#FFFFFF',
-    borderRadius: 20,
-    overflow: 'hidden',
-  },
-
-  classificationModal: {
-    width: '100%',
-    maxHeight: '82%',
-    backgroundColor: '#FFFFFF',
-    borderRadius: 20,
-    overflow: 'hidden',
-  },
-
-  categoryModalHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingHorizontal: 20,
-    paddingVertical: 17,
-    borderBottomWidth: 1,
-    borderBottomColor: '#F3D6E4',
-  },
-
-  categoryModalTitle: {
-    fontSize: 18,
-    fontWeight: '800',
-    color: '#54253B',
-  },
-
-  classificationTitleContainer: {
-    flex: 1,
-    paddingRight: 15,
-  },
-
-  classificationProductName: {
-    fontSize: 13,
-    color: '#987D8C',
-    marginTop: 3,
-  },
-
-  classificationInstruction: {
-    fontSize: 13,
-    color: '#8D7382',
-    paddingHorizontal: 20,
-    paddingTop: 15,
-    paddingBottom: 5,
-  },
-
-  categoriesList: {
-    paddingHorizontal: 15,
-    paddingVertical: 10,
-    maxHeight: 260,
-  },
-
-  classificationList: {
-    paddingHorizontal: 15,
-    paddingVertical: 10,
-    maxHeight: 420,
-  },
-
-  categoryItem: {
-    minHeight: 48,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingHorizontal: 15,
-    borderRadius: 11,
-    marginBottom: 7,
-    backgroundColor: '#FCE7F0',
-    borderWidth: 1,
-    borderColor: '#F3D6E4',
-  },
-
-  selectedCategoryItem: {
-    backgroundColor: '#F9D5E5',
-    borderWidth: 1,
-    borderColor: '#D63384',
-  },
-
-  categoryItemText: {
-    fontSize: 14,
-    color: '#75435C',
-  },
-
-  selectedCategoryText: {
-    color: '#8E3158',
-    fontWeight: '800',
-  },
-
-  classificationItem: {
-    minHeight: 58,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingHorizontal: 12,
-    borderRadius: 12,
-    marginBottom: 8,
-    backgroundColor: '#FCE7F0',
-    borderWidth: 1,
-    borderColor: '#F0D4E1',
-  },
-
-  selectedClassificationItem: {
-    backgroundColor: '#F9D5E5',
-    borderColor: '#D63384',
-  },
-
-  classificationItemLeft: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    flex: 1,
-  },
-
-  categoryIcon: {
+  modalTitle: { fontSize: 20, fontWeight: '800', color: '#442333' },
+  modalSubtitle: { marginTop: 4, fontSize: 11, color: '#947A88' },
+  closeButton: {
     width: 38,
     height: 38,
-    borderRadius: 11,
-    backgroundColor: '#FCE7F0',
-    justifyContent: 'center',
+    borderRadius: 12,
+    backgroundColor: '#FFF0F5',
     alignItems: 'center',
-    marginRight: 12,
+    justifyContent: 'center',
+    marginLeft: 10,
   },
-
-  categoryIconSelected: {
-    backgroundColor: '#D63384',
+  formContent: { padding: 15, paddingBottom: 30 },
+  formSection: {
+    marginBottom: 15,
+    padding: 14,
+    borderRadius: 17,
+    backgroundColor: '#FFFFFF',
+    borderWidth: 1,
+    borderColor: '#F0E5EA',
   },
-
-  classificationItemText: {
-    fontSize: 14,
-    color: '#75435C',
-    fontWeight: '600',
-  },
-
-  selectedClassificationText: {
-    color: '#C02670',
-    fontWeight: '800',
-  },
-
-  changingCategoryContainer: {
+  sectionHeadingRow: {
     flexDirection: 'row',
     alignItems: 'center',
+    marginBottom: 13,
+  },
+  sectionIcon: {
+    width: 39,
+    height: 39,
+    borderRadius: 12,
+    alignItems: 'center',
     justifyContent: 'center',
-    paddingVertical: 15,
-    borderTopWidth: 1,
-    borderTopColor: '#F3D6E4',
+    backgroundColor: '#FCEAF1',
+    marginRight: 10,
   },
-
-  changingCategoryText: {
-    marginLeft: 8,
+  sectionHeadingText: { flex: 1 },
+  sectionTitle: {
+    fontSize: 14,
+    fontWeight: '800',
+    color: '#542C40',
+    marginBottom: 4,
+  },
+  sectionSubtitle: { fontSize: 11, lineHeight: 16, color: '#987D8B' },
+  mainPhotoButton: {
+    height: 185,
+    borderRadius: 14,
+    overflow: 'hidden',
+    borderWidth: 1,
+    borderColor: '#EAD7E0',
+    backgroundColor: '#FFF5F8',
+  },
+  mainPhotoPreview: { width: '100%', height: '100%' },
+  photoPlaceholder: { flex: 1, alignItems: 'center', justifyContent: 'center' },
+  photoIconCircle: {
+    width: 58,
+    height: 58,
+    borderRadius: 20,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#FCE6EF',
+  },
+  photoPlaceholderText: {
+    marginTop: 10,
+    color: '#8D345B',
     fontSize: 13,
-    color: '#D63384',
+    fontWeight: '800',
+  },
+  photoHint: { marginTop: 5, color: '#A58A98', fontSize: 11 },
+  inputLabel: {
+    marginTop: 12,
+    marginBottom: 6,
+    fontSize: 12,
     fontWeight: '700',
+    color: '#674456',
   },
-
-  noCategoriesText: {
-    textAlign: 'center',
-    color: '#987D8C',
+  input: {
+    minHeight: 46,
+    paddingHorizontal: 13,
+    paddingVertical: 10,
+    borderRadius: 11,
+    borderWidth: 1,
+    borderColor: '#E9DCE3',
+    backgroundColor: '#FFFEFF',
+    color: '#452333',
     fontSize: 13,
-    paddingVertical: 20,
   },
-
-  newCategorySection: {
-    padding: 18,
-    borderTopWidth: 1,
-    borderTopColor: '#F3D6E4',
+  categoryGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
+  categoryChip: {
+    paddingHorizontal: 12,
+    paddingVertical: 9,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: '#E9DCE3',
     backgroundColor: '#FFFFFF',
   },
-
-  newCategoryTitle: {
-    fontSize: 14,
-    fontWeight: '800',
-    color: '#54253B',
-    marginBottom: 9,
-  },
-
-  newCategoryInput: {
-    minHeight: 46,
-    borderWidth: 1,
-    borderColor: '#EBD9E2',
-    borderRadius: 12,
-    paddingHorizontal: 13,
-    fontSize: 14,
-    color: '#54253B',
-    marginBottom: 10,
-    backgroundColor: '#FFFCFD',
-  },
-
-  newCategoryButton: {
-    minHeight: 46,
-    borderRadius: 12,
-    backgroundColor: '#D63384',
+  categoryChipSelected: { backgroundColor: '#B83268', borderColor: '#B83268' },
+  categoryChipText: { fontSize: 11, color: '#79586A', fontWeight: '700' },
+  categoryChipTextSelected: { color: '#FFFFFF' },
+  addCategoryButton: {
     flexDirection: 'row',
+    alignItems: 'center',
+    alignSelf: 'flex-start',
+    marginTop: 13,
+    marginBottom: 2,
+    paddingVertical: 4,
+  },
+  addCategoryText: { marginLeft: 6, fontSize: 12, fontWeight: '800', color: '#B83268' },
+  variantSectionHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 12,
+  },
+  variantTitleContainer: { flex: 1, paddingRight: 5 },
+  addVariantButton: {
+    width: 40,
+    height: 40,
+    borderRadius: 13,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#B83268',
+    marginLeft: 6,
+  },
+  variantCard: {
+    padding: 13,
+    marginBottom: 12,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: '#EDDEE5',
+    backgroundColor: '#FFFAFC',
+  },
+  variantCardHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 6,
+  },
+  variantNumberBadge: {
+    width: 32,
+    height: 32,
+    borderRadius: 10,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#FCE6EF',
+    marginRight: 9,
+  },
+  variantNumberText: { fontSize: 11, fontWeight: '800', color: '#B83268' },
+  variantLabel: { flex: 1, fontSize: 13, fontWeight: '800', color: '#542C40' },
+  removeVariantButton: {
+    width: 34,
+    height: 34,
+    borderRadius: 10,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#FFF0F1',
+  },
+  variantePhotoButton: {
+    minHeight: 145,
+    marginTop: 4,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderStyle: 'dashed',
+    borderColor: '#DAB4C5',
+    backgroundColor: '#FFFFFF',
+    overflow: 'hidden',
+  },
+  variantePreviewImage: { width: '100%', height: 190 },
+  variantePhotoPlaceholder: {
+    minHeight: 145,
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: 12,
+  },
+  variantCameraCircle: {
+    width: 49,
+    height: 49,
+    borderRadius: 16,
+    backgroundColor: '#FCEAF1',
     alignItems: 'center',
     justifyContent: 'center',
   },
-
-  newCategoryButtonText: {
-    color: '#FFFFFF',
-    fontSize: 14,
+  variantePhotoText: {
+    marginTop: 9,
+    fontSize: 12,
+    fontWeight: '700',
+    textAlign: 'center',
+    color: '#8D345B',
+  },
+  stockTotalCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    padding: 13,
+    borderRadius: 13,
+    backgroundColor: '#FFF1F6',
+    borderWidth: 1,
+    borderColor: '#F2DDE6',
+    marginTop: 2,
+  },
+  stockTotalIcon: {
+    width: 39,
+    height: 39,
+    borderRadius: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#FFFFFF',
+  },
+  stockTotalInfo: { flex: 1, marginLeft: 10 },
+  stockTotalLabel: { fontSize: 13, fontWeight: '800', color: '#65364D' },
+  stockTotalDescription: { marginTop: 3, fontSize: 10, color: '#987B8B' },
+  stockTotalValue: {
+    fontSize: 23,
     fontWeight: '800',
-    marginLeft: 7,
+    color: '#B83268',
+    marginLeft: 8,
+  },
+  pricePreviewCard: {
+    marginTop: 3,
+    marginBottom: 4,
+    padding: 16,
+    borderRadius: 16,
+    backgroundColor: '#FFF0F5',
+    borderWidth: 1,
+    borderColor: '#F0D8E3',
+  },
+  pricePreviewTop: { flexDirection: 'row', alignItems: 'center' },
+  pricePreviewIcon: {
+    width: 42,
+    height: 42,
+    borderRadius: 13,
+    backgroundColor: '#FFFFFF',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  pricePreviewInfo: { flex: 1, marginLeft: 11 },
+  pricePreviewLabel: { fontSize: 12, fontWeight: '800', color: '#75445B' },
+  pricePreviewHint: { marginTop: 4, fontSize: 10, color: '#A08291' },
+  pricePreviewValue: {
+    marginTop: 13,
+    fontSize: 27,
+    fontWeight: '800',
+    color: '#B83268',
+  },
+  saveButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    minHeight: 50,
+    marginTop: 15,
+    borderRadius: 13,
+    backgroundColor: '#B83268',
+    paddingHorizontal: 16,
+    elevation: 2,
+    shadowColor: '#9C2856',
+    shadowOffset: { width: 0, height: 3 },
+    shadowOpacity: 0.16,
+    shadowRadius: 5,
+  },
+  saveButtonDisabled: { opacity: 0.6 },
+  saveButtonText: { color: '#FFFFFF', fontSize: 13, fontWeight: '800' },
+  cancelButton: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    minHeight: 45,
+    marginTop: 9,
+    borderRadius: 12,
+    backgroundColor: '#F4EAF0',
+  },
+  cancelButtonText: { color: '#80506A', fontSize: 13, fontWeight: '800' },
+  categoryModalContent: {
+    padding: 21,
+    borderRadius: 20,
+    backgroundColor: '#FFFFFF',
+    borderWidth: 1,
+    borderColor: '#F0E4EA',
+  },
+  categoryModalIcon: {
+    width: 51,
+    height: 51,
+    borderRadius: 16,
+    backgroundColor: '#FCEAF1',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 14,
+  },
+  categoryModalSubtitle: {
+    marginTop: 7,
+    marginBottom: 16,
+    fontSize: 12,
+    lineHeight: 18,
+    color: '#947A88',
   },
 });

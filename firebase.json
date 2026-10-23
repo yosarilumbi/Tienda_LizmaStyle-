@@ -17,8 +17,24 @@
       "source": "functions"
     },
     {
-      "source": "compras",
       "codebase": "compras",
+      "disallowLegacyRuntimeConfig": true,
+      "ignore": [
+        "node_modules",
+        ".git",
+        "firebase-debug.log",
+        "firebase-debug.*.log",
+        "*.local"
+      ],
+      "predeploy": [
+        "npm --prefix \"$RESOURCE_DIR\" run lint",
+        "npm --prefix \"$RESOURCE_DIR\" run build"
+      ],
+      "source": "compras"
+    },
+    {
+      "source": "asistente-ia",
+      "codebase": "asistente-ia",
       "disallowLegacyRuntimeConfig": true,
       "ignore": [
         "node_modules",

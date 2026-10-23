@@ -161,11 +161,14 @@ export default function HistorialClienteScreen() {
   };
 
   const formatearMonto = (monto: number) => {
-    return `C$ ${Number(monto || 0).toLocaleString('es-NI', {
-      minimumFractionDigits: 2,
-      maximumFractionDigits: 2,
-    })}`;
-  };
+  const numero = Number(monto || 0);
+
+  return `C$ ${numero.toLocaleString('en-US', {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+    useGrouping: true,
+  })}`;
+};
 
   const deudasPendientes = useMemo(() => {
     return ventas.filter(
@@ -252,7 +255,10 @@ export default function HistorialClienteScreen() {
                 </Text>
 
                 <Text style={styles.productQuantity}>
-                  Cantidad: {producto.cantidad || 0}
+                 Cantidad: {Number(producto.cantidad || 0).toLocaleString('en-US', {
+  maximumFractionDigits: 0,
+  useGrouping: true,
+})}
                 </Text>
               </View>
 

@@ -7,8 +7,8 @@ import {
   collection,
   doc,
   getDoc,
+  runTransaction,
   serverTimestamp,
-  setDoc,
   Timestamp,
 } from 'firebase/firestore';
 import { useState } from 'react';
@@ -231,6 +231,36 @@ function crearHtmlFactura(datos: DatosFactura): string {
   `;
 }
 
+/**
+ * Recupera el ID real del producto.
+ * El carrito puede tener un ID compuesto por producto, talla y color.
+ */
+function resolverProductoId(
+  id: string,
+  productoId?: string
+): string {
+  if (productoId) return productoId;
+
+  try {
+    const idParseado = JSON.parse(id);
+
+    if (
+      Array.isArray(idParseado) &&
+      typeof idParseado[0] === 'string'
+    ) {
+      return idParseado[0];
+    }
+  } catch {
+    // El ID no es un identificador compuesto.
+  }
+
+  return id;
+}
+
+function normalizarValor(valor: unknown): string {
+  return String(valor ?? '').trim().toLocaleLowerCase();
+}
+
 export default function ConfirmarPedidoScreen() {
   const router = useRouter();
 
@@ -300,18 +330,37 @@ export default function ConfirmarPedidoScreen() {
       }
 
       const productosVenta = carrito.map((producto) => ({
-        productoId: producto.id,
+        productoId: resolverProductoId(
+          producto.id,
+          producto.productoId
+        ),
         nombre: producto.nombre,
         codigo: producto.codigo || '',
         categoria: producto.categoria || '',
         marca: producto.marca || '',
         precioVenta: Number(producto.precioVenta || 0),
-        cantidad: Number(producto.cantidad || 0),
+        cantidad: Math.floor(Number(producto.cantidad || 0)),
         subtotal:
           Number(producto.precioVenta || 0) *
-          Number(producto.cantidad || 0),
+          Math.floor(Number(producto.cantidad || 0)),
         imagenUrl: producto.imagenUrl || '',
+        talla: producto.talla || '',
+        color: producto.color || '',
+        usaVariantes: Boolean(producto.usaVariantes),
       }));
+
+      if (
+        productosVenta.some(
+          (producto) =>
+            !producto.productoId ||
+            !Number.isInteger(producto.cantidad) ||
+            producto.cantidad < 1
+        )
+      ) {
+        throw new Error(
+          'Hay un producto con datos inválidos en el carrito. Elimina ese producto y agrégalo nuevamente.'
+        );
+      }
 
       const esCredito = metodoCompra === 'credito';
 
@@ -338,22 +387,175 @@ export default function ConfirmarPedidoScreen() {
           .slice(0, 6)
           .toUpperCase()}`;
 
-      await setDoc(ventaRef, {
-        facturaNumero: numeroFactura,
-        clienteId: usuarioActual.uid,
-        clienteNombre,
-        clienteTelefono,
-        correoCliente,
-        productos: productosVenta,
-        cantidadProductos,
-        total,
-        montoPagado,
-        saldoPendiente,
-        estado,
-        metodoPago,
-        fechaVenta: serverTimestamp(),
-        fechaLimitePago,
-        creadoPor: 'cliente',
+      /*
+       * La venta y el descuento del inventario se ejecutan
+       * en una sola transacción.
+       *
+       * Si algún producto no tiene suficientes unidades,
+       * Firebase cancela toda la transacción.
+       */
+      await runTransaction(db, async (transaccion) => {
+        const idsProductos = [
+          ...new Set(
+            productosVenta.map((producto) => producto.productoId)
+          ),
+        ];
+
+        const referencias = new Map(
+          idsProductos.map((id) => [
+            id,
+            doc(db, 'productos', id),
+          ])
+        );
+
+        // Leer todos los productos antes de efectuar escrituras.
+        const documentos = new Map<string, any>();
+
+        for (const id of idsProductos) {
+          const referencia = referencias.get(id)!;
+          const snapshot = await transaccion.get(referencia);
+
+          if (!snapshot.exists()) {
+            throw new Error(
+              `El producto "${id}" ya no existe en el inventario.`
+            );
+          }
+
+          const datos = snapshot.data();
+
+          documentos.set(id, {
+            ...datos,
+            variantes: Array.isArray(datos.variantes)
+              ? datos.variantes.map((variante: any) => ({
+                  ...variante,
+                }))
+              : undefined,
+          });
+        }
+
+        /*
+         * Actualizar primero los datos en memoria.
+         * Así se acumulan correctamente las cantidades de cada
+         * producto y de cada combinación de talla y color.
+         */
+        for (const linea of carrito) {
+          const idProducto = resolverProductoId(
+            linea.id,
+            linea.productoId
+          );
+
+          const datosProducto = documentos.get(idProducto);
+
+          if (!datosProducto) {
+            throw new Error(
+              `No se encontró el producto "${linea.nombre}".`
+            );
+          }
+
+          const cantidad = Math.floor(Number(linea.cantidad));
+
+          if (!Number.isFinite(cantidad) || cantidad < 1) {
+            throw new Error(
+              `La cantidad de "${linea.nombre}" no es válida.`
+            );
+          }
+
+          if (
+            Array.isArray(datosProducto.variantes) &&
+            datosProducto.variantes.length > 0
+          ) {
+            const indiceVariante =
+              datosProducto.variantes.findIndex(
+                (variante: any) =>
+                  normalizarValor(variante.talla) ===
+                    normalizarValor(linea.talla) &&
+                  normalizarValor(variante.color) ===
+                    normalizarValor(linea.color)
+              );
+
+            if (indiceVariante === -1) {
+              throw new Error(
+                `No se encontró la talla y el color seleccionados de "${linea.nombre}".`
+              );
+            }
+
+            const variante =
+              datosProducto.variantes[indiceVariante];
+
+            const stockDisponible = Math.max(
+              0,
+              Math.floor(Number(variante.stock) || 0)
+            );
+
+            if (stockDisponible < cantidad) {
+              throw new Error(
+                `Stock insuficiente de "${linea.nombre}" ` +
+                  `(talla ${linea.talla || 'única'}, ` +
+                  `color ${linea.color || 'no especificado'}). ` +
+                  `Disponible: ${stockDisponible}; solicitado: ${cantidad}.`
+              );
+            }
+
+            datosProducto.variantes[indiceVariante] = {
+              ...variante,
+              stock: stockDisponible - cantidad,
+            };
+
+            // El stock general será la suma de todas las variantes.
+            datosProducto.stock =
+              datosProducto.variantes.reduce(
+                (suma: number, item: any) =>
+                  suma + Math.max(0, Number(item.stock) || 0),
+                0
+              );
+          } else {
+            const stockDisponible = Math.max(
+              0,
+              Math.floor(Number(datosProducto.stock) || 0)
+            );
+
+            if (stockDisponible < cantidad) {
+              throw new Error(
+                `Stock insuficiente de "${linea.nombre}". ` +
+                  `Disponible: ${stockDisponible}; solicitado: ${cantidad}.`
+              );
+            }
+
+            datosProducto.stock = stockDisponible - cantidad;
+          }
+        }
+
+        // Guardar los stocks actualizados.
+        for (const id of idsProductos) {
+          const datosProducto = documentos.get(id);
+          const referencia = referencias.get(id)!;
+
+          transaccion.update(referencia, {
+            stock: datosProducto.stock,
+            ...(Array.isArray(datosProducto.variantes)
+              ? { variantes: datosProducto.variantes }
+              : {}),
+          });
+        }
+
+        // Crear la venta solamente si todo el inventario es válido.
+        transaccion.set(ventaRef, {
+          facturaNumero: numeroFactura,
+          clienteId: usuarioActual.uid,
+          clienteNombre,
+          clienteTelefono,
+          correoCliente,
+          productos: productosVenta,
+          cantidadProductos,
+          total,
+          montoPagado,
+          saldoPendiente,
+          estado,
+          metodoPago,
+          fechaVenta: serverTimestamp(),
+          fechaLimitePago,
+          creadoPor: 'cliente',
+        });
       });
 
       const datosFactura: DatosFactura = {
@@ -375,7 +577,7 @@ export default function ConfirmarPedidoScreen() {
         saldoPendiente,
       };
 
-      // La venta ya está guardada en Firebase.
+      // Vaciar el carrito después de guardar la venta y el inventario.
       vaciarCarrito();
 
       let facturaGenerada = false;
@@ -399,7 +601,10 @@ export default function ConfirmarPedidoScreen() {
           await Print.printAsync({ html });
         }
       } catch (error) {
-        console.error('Error al generar o compartir la factura:', error);
+        console.error(
+          'Error al generar o compartir la factura:',
+          error
+        );
       }
 
       const mensaje =
@@ -424,10 +629,20 @@ export default function ConfirmarPedidoScreen() {
     } catch (error) {
       console.error('Error al registrar la venta:', error);
 
-      Alert.alert(
-        'Error',
-        'No se pudo registrar la compra. Comprueba tu conexión e inténtalo nuevamente.'
-      );
+      const mensaje =
+        error instanceof Error &&
+        (
+          error.message.includes('Stock insuficiente') ||
+          error.message.includes('No se encontró') ||
+          error.message.includes('no existe') ||
+          error.message.includes('talla y el color') ||
+          error.message.includes('datos inválidos') ||
+          error.message.includes('no es válida')
+        )
+          ? error.message
+          : 'No se pudo registrar la compra. Comprueba tu conexión e inténtalo nuevamente.';
+
+      Alert.alert('No se pudo completar la compra', mensaje);
     } finally {
       setGuardando(false);
     }
@@ -538,7 +753,9 @@ export default function ConfirmarPedidoScreen() {
               <Text style={styles.sectionTitle}>Tu selección</Text>
               <Text style={styles.sectionSubtitle}>
                 {cantidadProductos}{' '}
-                {cantidadProductos === 1 ? 'producto' : 'productos'} en tu pedido
+                {cantidadProductos === 1
+                  ? 'producto'
+                  : 'productos'} en tu pedido
               </Text>
             </View>
           </View>
@@ -568,7 +785,8 @@ export default function ConfirmarPedidoScreen() {
                 key={producto.id}
                 style={[
                   styles.productRow,
-                  indice === carrito.length - 1 && styles.lastProductRow,
+                  indice === carrito.length - 1 &&
+                    styles.lastProductRow,
                 ]}
               >
                 <View style={styles.productIcon}>
@@ -586,11 +804,25 @@ export default function ConfirmarPedidoScreen() {
                   >
                     {producto.nombre}
                   </Text>
+
                   {producto.codigo ? (
                     <Text style={styles.productCode}>
                       Código: {producto.codigo}
                     </Text>
                   ) : null}
+
+                  {producto.talla || producto.color ? (
+                    <Text style={styles.productCode}>
+                      {producto.talla
+                        ? `Talla: ${producto.talla}`
+                        : ''}
+                      {producto.talla && producto.color ? ' · ' : ''}
+                      {producto.color
+                        ? `Color: ${producto.color}`
+                        : ''}
+                    </Text>
+                  ) : null}
+
                   <Text style={styles.productQuantity}>
                     Cantidad: {producto.cantidad}
                   </Text>
@@ -630,8 +862,12 @@ export default function ConfirmarPedidoScreen() {
           </View>
 
           <View style={styles.summaryRow}>
-            <Text style={styles.summaryLabel}>Cantidad de productos</Text>
-            <Text style={styles.summaryValue}>{cantidadProductos}</Text>
+            <Text style={styles.summaryLabel}>
+              Cantidad de productos
+            </Text>
+            <Text style={styles.summaryValue}>
+              {cantidadProductos}
+            </Text>
           </View>
 
           <View style={styles.summaryRow}>
@@ -769,10 +1005,14 @@ export default function ConfirmarPedidoScreen() {
       <View style={styles.footer}>
         <View style={styles.footerTotal}>
           <View>
-            <Text style={styles.footerLabel}>Total de tu pedido</Text>
+            <Text style={styles.footerLabel}>
+              Total de tu pedido
+            </Text>
             <Text style={styles.footerCaption}>
               {cantidadProductos}{' '}
-              {cantidadProductos === 1 ? 'producto' : 'productos'}
+              {cantidadProductos === 1
+                ? 'producto'
+                : 'productos'}
             </Text>
           </View>
           <Text style={styles.footerPrice}>
@@ -836,7 +1076,6 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: COLORES.fondo,
   },
-
   header: {
     minHeight: 76,
     backgroundColor: COLORES.blanco,
@@ -847,7 +1086,6 @@ const styles = StyleSheet.create({
     borderBottomWidth: 1,
     borderBottomColor: COLORES.borde,
   },
-
   backButton: {
     width: 42,
     height: 42,
@@ -856,12 +1094,10 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     alignItems: 'center',
   },
-
   headerCenter: {
     flex: 1,
     alignItems: 'center',
   },
-
   brandName: {
     fontSize: 10,
     fontWeight: '800',
@@ -869,29 +1105,24 @@ const styles = StyleSheet.create({
     color: COLORES.rosa,
     marginBottom: 3,
   },
-
   headerTitle: {
     fontSize: 18,
     fontWeight: '700',
     color: COLORES.texto,
   },
-
   headerSpace: {
     width: 42,
   },
-
   content: {
     paddingHorizontal: 17,
     paddingTop: 21,
     paddingBottom: 225,
   },
-
   hero: {
     flexDirection: 'row',
     alignItems: 'center',
     marginBottom: 22,
   },
-
   heroIcon: {
     width: 57,
     height: 57,
@@ -900,26 +1131,22 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     alignItems: 'center',
   },
-
   heroText: {
     flex: 1,
     marginLeft: 13,
   },
-
   title: {
     fontSize: 21,
     fontWeight: '800',
     color: COLORES.texto,
     letterSpacing: -0.4,
   },
-
   subtitle: {
     fontSize: 12,
     lineHeight: 18,
     color: COLORES.secundario,
     marginTop: 5,
   },
-
   stepRow: {
     height: 53,
     flexDirection: 'row',
@@ -927,7 +1154,6 @@ const styles = StyleSheet.create({
     marginBottom: 20,
     paddingHorizontal: 20,
   },
-
   stepCircle: {
     width: 25,
     height: 25,
@@ -936,29 +1162,24 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     alignItems: 'center',
   },
-
   stepCircleActive: {
     borderWidth: 2,
     borderColor: COLORES.rosa,
     backgroundColor: COLORES.blanco,
   },
-
   stepCircleMuted: {
     backgroundColor: '#F2E8ED',
   },
-
   stepNumber: {
     color: COLORES.rosa,
     fontSize: 11,
     fontWeight: '800',
   },
-
   stepNumberMuted: {
     color: COLORES.secundario,
     fontSize: 11,
     fontWeight: '700',
   },
-
   stepLine: {
     flex: 1,
     height: 2,
@@ -966,7 +1187,6 @@ const styles = StyleSheet.create({
     marginTop: 12,
     marginHorizontal: 5,
   },
-
   stepLineMuted: {
     flex: 1,
     height: 2,
@@ -974,7 +1194,6 @@ const styles = StyleSheet.create({
     marginTop: 12,
     marginHorizontal: 5,
   },
-
   stepLabels: {
     position: 'absolute',
     top: 31,
@@ -983,18 +1202,15 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     justifyContent: 'space-between',
   },
-
   stepLabel: {
     fontSize: 10,
     color: COLORES.secundario,
   },
-
   stepLabelActive: {
     fontSize: 10,
     fontWeight: '800',
     color: COLORES.rosaOscuro,
   },
-
   section: {
     backgroundColor: COLORES.blanco,
     borderRadius: 21,
@@ -1008,13 +1224,11 @@ const styles = StyleSheet.create({
     shadowRadius: 10,
     elevation: 2,
   },
-
   sectionHeading: {
     flexDirection: 'row',
     alignItems: 'center',
     marginBottom: 14,
   },
-
   headingIcon: {
     width: 39,
     height: 39,
@@ -1023,24 +1237,20 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     alignItems: 'center',
   },
-
   headingText: {
     flex: 1,
     marginLeft: 11,
   },
-
   sectionTitle: {
     fontSize: 16,
     fontWeight: '800',
     color: COLORES.texto,
   },
-
   sectionSubtitle: {
     fontSize: 11,
     color: COLORES.secundario,
     marginTop: 3,
   },
-
   productRow: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -1048,12 +1258,10 @@ const styles = StyleSheet.create({
     borderBottomWidth: 1,
     borderBottomColor: '#F7EAF0',
   },
-
   lastProductRow: {
     borderBottomWidth: 0,
     paddingBottom: 1,
   },
-
   productIcon: {
     width: 43,
     height: 47,
@@ -1062,62 +1270,52 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     alignItems: 'center',
   },
-
   productDetails: {
     flex: 1,
     marginLeft: 11,
     marginRight: 7,
   },
-
   productName: {
     fontSize: 13,
     fontWeight: '700',
     color: COLORES.texto,
     lineHeight: 18,
   },
-
   productCode: {
     fontSize: 10,
     color: COLORES.secundario,
     marginTop: 3,
   },
-
   productQuantity: {
     fontSize: 11,
     color: COLORES.secundario,
     marginTop: 4,
   },
-
   productPriceContainer: {
     alignItems: 'flex-end',
     maxWidth: 115,
   },
-
   productPrice: {
     fontSize: 13,
     fontWeight: '800',
     color: COLORES.rosaOscuro,
     textAlign: 'right',
   },
-
   unitPrice: {
     fontSize: 10,
     color: COLORES.secundario,
     marginTop: 4,
     textAlign: 'right',
   },
-
   emptyCart: {
     alignItems: 'center',
     paddingVertical: 20,
   },
-
   emptyCartText: {
     color: COLORES.secundario,
     fontSize: 13,
     marginTop: 9,
   },
-
   catalogButton: {
     marginTop: 13,
     backgroundColor: COLORES.rosaClaro,
@@ -1125,62 +1323,52 @@ const styles = StyleSheet.create({
     paddingHorizontal: 15,
     borderRadius: 12,
   },
-
   catalogButtonText: {
     color: COLORES.rosaOscuro,
     fontSize: 12,
     fontWeight: '700',
   },
-
   summaryRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
     marginBottom: 13,
   },
-
   summaryLabel: {
     fontSize: 12,
     color: COLORES.secundario,
   },
-
   summaryValue: {
     fontSize: 13,
     fontWeight: '700',
     color: COLORES.texto,
   },
-
   divider: {
     height: 1,
     backgroundColor: COLORES.borde,
     marginTop: 1,
     marginBottom: 15,
   },
-
   totalRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
   },
-
   totalLabel: {
     fontSize: 15,
     fontWeight: '800',
     color: COLORES.texto,
   },
-
   totalCaption: {
     fontSize: 10,
     color: COLORES.secundario,
     marginTop: 4,
   },
-
   totalValue: {
     fontSize: 19,
     fontWeight: '900',
     color: COLORES.rosa,
   },
-
   paymentOption: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -1191,12 +1379,10 @@ const styles = StyleSheet.create({
     marginBottom: 11,
     backgroundColor: COLORES.blanco,
   },
-
   paymentOptionSelected: {
     borderColor: COLORES.rosa,
     backgroundColor: '#FFF5F9',
   },
-
   paymentIcon: {
     width: 45,
     height: 45,
@@ -1205,30 +1391,25 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     alignItems: 'center',
   },
-
   paymentIconSelected: {
     backgroundColor: COLORES.rosa,
   },
-
   paymentTextContainer: {
     flex: 1,
     marginLeft: 11,
     marginRight: 8,
   },
-
   paymentTitle: {
     fontSize: 13,
     fontWeight: '800',
     color: COLORES.texto,
   },
-
   paymentDescription: {
     fontSize: 10,
     lineHeight: 15,
     color: COLORES.secundario,
     marginTop: 4,
   },
-
   radio: {
     width: 21,
     height: 21,
@@ -1238,18 +1419,15 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     alignItems: 'center',
   },
-
   radioSelected: {
     borderColor: COLORES.rosa,
   },
-
   radioInner: {
     width: 11,
     height: 11,
     borderRadius: 6,
     backgroundColor: COLORES.rosa,
   },
-
   infoBox: {
     flexDirection: 'row',
     alignItems: 'flex-start',
@@ -1260,7 +1438,6 @@ const styles = StyleSheet.create({
     padding: 15,
     marginBottom: 15,
   },
-
   infoIcon: {
     width: 31,
     height: 31,
@@ -1269,38 +1446,32 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     alignItems: 'center',
   },
-
   infoContent: {
     flex: 1,
     marginLeft: 10,
   },
-
   infoTitle: {
     fontSize: 12,
     fontWeight: '800',
     color: COLORES.rosaOscuro,
     marginBottom: 5,
   },
-
   infoText: {
     fontSize: 11,
     lineHeight: 17,
     color: COLORES.texto,
   },
-
   securityNote: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
     marginBottom: 5,
   },
-
   securityText: {
     fontSize: 10,
     color: COLORES.secundario,
     marginLeft: 6,
   },
-
   footer: {
     position: 'absolute',
     bottom: 0,
@@ -1318,32 +1489,27 @@ const styles = StyleSheet.create({
     shadowRadius: 12,
     elevation: 12,
   },
-
   footerTotal: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
     marginBottom: 13,
   },
-
   footerLabel: {
     fontSize: 13,
     fontWeight: '700',
     color: COLORES.texto,
   },
-
   footerCaption: {
     fontSize: 10,
     color: COLORES.secundario,
     marginTop: 3,
   },
-
   footerPrice: {
     fontSize: 22,
     fontWeight: '900',
     color: COLORES.rosa,
   },
-
   confirmButton: {
     minHeight: 53,
     backgroundColor: COLORES.rosa,
@@ -1358,18 +1524,15 @@ const styles = StyleSheet.create({
     shadowRadius: 6,
     elevation: 4,
   },
-
   confirmButtonDisabled: {
     opacity: 0.55,
   },
-
   confirmButtonText: {
     color: COLORES.blanco,
     fontSize: 13,
     fontWeight: '800',
     marginRight: 9,
   },
-
   footerSecure: {
     fontSize: 10,
     color: COLORES.secundario,

@@ -1,3 +1,4 @@
+
 import { Ionicons } from "@expo/vector-icons";
 import { useRouter } from "expo-router";
 import {
@@ -52,6 +53,22 @@ interface Venta {
 export default function HistorialVentasScreen() {
   const router = useRouter();
 
+  // FORMATO DE MONTOS Y CANTIDADES
+  const formatearMonto = (monto: number) => {
+    return `C$ ${Number(monto || 0).toLocaleString("en-US", {
+      minimumFractionDigits: 2,
+      maximumFractionDigits: 2,
+      useGrouping: true,
+    })}`;
+  };
+
+  const formatearCantidad = (cantidad: number) => {
+    return Number(cantidad || 0).toLocaleString("en-US", {
+      maximumFractionDigits: 0,
+      useGrouping: true,
+    });
+  };
+
   const [ventas, setVentas] = useState<Venta[]>([]);
   const [loading, setLoading] = useState(true);
   const [busqueda, setBusqueda] = useState("");
@@ -79,51 +96,34 @@ export default function HistorialVentasScreen() {
         return {
           id: item.id,
           clienteId: data.clienteId || "",
-          clienteNombre:
-            data.clienteNombre || "Cliente general",
-          clienteTelefono:
-            data.clienteTelefono || "",
+          clienteNombre: data.clienteNombre || "Cliente general",
+          clienteTelefono: data.clienteTelefono || "",
           productos: Array.isArray(data.productos)
             ? data.productos.map((producto: any) => ({
-                productoId:
-                  producto.productoId || "",
+                productoId: producto.productoId || "",
                 nombre: producto.nombre || "",
                 codigo: producto.codigo || "",
-                categoria:
-                  producto.categoria || "",
+                categoria: producto.categoria || "",
                 marca: producto.marca || "",
-                precioUnitario:
-                  Number(
-                    producto.precioUnitario || 0
-                  ),
-                cantidad:
-                  Number(producto.cantidad || 0),
-                subtotal:
-                  Number(producto.subtotal || 0),
+                precioUnitario: Number(producto.precioUnitario || 0),
+                cantidad: Number(producto.cantidad || 0),
+                subtotal: Number(producto.subtotal || 0),
               }))
             : [],
           subtotal: Number(data.subtotal || 0),
           total: Number(data.total || 0),
           metodoPago:
-            data.metodoPago === "Crédito"
-              ? "Crédito"
-              : "Contado",
-          montoPagado:
-            Number(data.montoPagado || 0),
-          saldoPendiente:
-            Number(data.saldoPendiente || 0),
+            data.metodoPago === "Crédito" ? "Crédito" : "Contado",
+          montoPagado: Number(data.montoPagado || 0),
+          saldoPendiente: Number(data.saldoPendiente || 0),
           estado: data.estado || "",
-          fechaVenta:
-            data.fechaVenta || null,
+          fechaVenta: data.fechaVenta || null,
         };
       });
 
       setVentas(listaVentas);
     } catch (error) {
-      console.error(
-        "Error cargando historial de ventas:",
-        error
-      );
+      console.error("Error cargando historial de ventas:", error);
 
       Alert.alert(
         "Error",
@@ -135,9 +135,7 @@ export default function HistorialVentasScreen() {
   };
 
   const ventasFiltradas = useMemo(() => {
-    const texto = busqueda
-      .toLowerCase()
-      .trim();
+    const texto = busqueda.toLowerCase().trim();
 
     if (!texto) {
       return ventas;
@@ -145,110 +143,65 @@ export default function HistorialVentasScreen() {
 
     return ventas.filter((venta) => {
       const productosTexto = venta.productos
-        .map(
-          (producto) =>
-            `${producto.nombre} ${producto.codigo}`
-        )
+        .map((producto) => `${producto.nombre} ${producto.codigo}`)
         .join(" ")
         .toLowerCase();
 
       return (
-        venta.clienteNombre
-          .toLowerCase()
-          .includes(texto) ||
-        venta.clienteTelefono
-          .toLowerCase()
-          .includes(texto) ||
-        venta.metodoPago
-          .toLowerCase()
-          .includes(texto) ||
-        venta.estado
-          .toLowerCase()
-          .includes(texto) ||
+        venta.clienteNombre.toLowerCase().includes(texto) ||
+        venta.clienteTelefono.toLowerCase().includes(texto) ||
+        venta.metodoPago.toLowerCase().includes(texto) ||
+        venta.estado.toLowerCase().includes(texto) ||
         productosTexto.includes(texto)
       );
     });
   }, [ventas, busqueda]);
 
-  const formatearFecha = (
-    fecha: Timestamp | null
-  ) => {
+  const formatearFecha = (fecha: Timestamp | null) => {
     if (!fecha) {
       return "Fecha no disponible";
     }
 
-    const fechaReal = fecha.toDate();
-
-    return fechaReal.toLocaleDateString(
-      "es-NI",
-      {
-        day: "2-digit",
-        month: "2-digit",
-        year: "numeric",
-      }
-    );
+    return fecha.toDate().toLocaleDateString("es-NI", {
+      day: "2-digit",
+      month: "2-digit",
+      year: "numeric",
+    });
   };
 
-  const formatearHora = (
-    fecha: Timestamp | null
-  ) => {
+  const formatearHora = (fecha: Timestamp | null) => {
     if (!fecha) {
       return "";
     }
 
-    const fechaReal = fecha.toDate();
-
-    return fechaReal.toLocaleTimeString(
-      "es-NI",
-      {
-        hour: "2-digit",
-        minute: "2-digit",
-      }
-    );
+    return fecha.toDate().toLocaleTimeString("es-NI", {
+      hour: "2-digit",
+      minute: "2-digit",
+    });
   };
 
-  const obtenerCantidadProductos = (
-    venta: Venta
-  ) => {
+  const obtenerCantidadProductos = (venta: Venta) => {
     return venta.productos.reduce(
-      (total, producto) =>
-        total + producto.cantidad,
+      (total, producto) => total + producto.cantidad,
       0
     );
   };
 
-  const obtenerTextoEstado = (
-    estado: string
-  ) => {
-    if (estado === "Pagada") {
-      return "Pagada";
-    }
-
-    if (estado === "Cancelado") {
-      return "Cancelado";
-    }
-
-    if (estado === "Pendiente") {
-      return "Pendiente";
-    }
+  const obtenerTextoEstado = (estado: string) => {
+    if (estado === "Pagada") return "Pagada";
+    if (estado === "Cancelado") return "Cancelado";
+    if (estado === "Pendiente") return "Pendiente";
 
     return estado || "Sin estado";
   };
 
-  const renderVenta = ({
-    item,
-  }: {
-    item: Venta;
-  }) => {
-    const cantidadProductos =
-      obtenerCantidadProductos(item);
+  const renderVenta = ({ item }: { item: Venta }) => {
+    const cantidadProductos = obtenerCantidadProductos(item);
 
     return (
       <TouchableOpacity
         style={styles.cardVenta}
-        onPress={() =>
-          setVentaSeleccionada(item)
-        }
+        onPress={() => setVentaSeleccionada(item)}
         activeOpacity={0.8}
       >
         <View style={styles.cardVentaHeader}>
@@ -261,10 +214,7 @@ export default function HistorialVentasScreen() {
           </View>
 
           <View style={styles.infoVenta}>
-            <Text
-              style={styles.clienteVenta}
-              numberOfLines={1}
-            >
+            <Text style={styles.clienteVenta} numberOfLines={1}>
               {item.clienteNombre}
             </Text>
 
@@ -286,45 +236,32 @@ export default function HistorialVentasScreen() {
 
         <View style={styles.resumenVenta}>
           <View>
-            <Text style={styles.labelVenta}>
-              Productos
-            </Text>
-
+            <Text style={styles.labelVenta}>Productos</Text>
             <Text style={styles.valorVenta}>
-              {cantidadProductos}
+              {formatearCantidad(cantidadProductos)}
             </Text>
           </View>
 
           <View>
-            <Text style={styles.labelVenta}>
-              Método
-            </Text>
+            <Text style={styles.labelVenta}>Método</Text>
 
             <View
               style={[
                 styles.etiquetaMetodo,
-                item.metodoPago ===
-                  "Crédito" &&
+                item.metodoPago === "Crédito" &&
                   styles.etiquetaCredito,
               ]}
             >
-              <Text
-                style={
-                  styles.textoEtiquetaMetodo
-                }
-              >
+              <Text style={styles.textoEtiquetaMetodo}>
                 {item.metodoPago}
               </Text>
             </View>
           </View>
 
           <View style={styles.totalVenta}>
-            <Text style={styles.labelVenta}>
-              Total
-            </Text>
-
+            <Text style={styles.labelVenta}>Total</Text>
             <Text style={styles.valorTotal}>
-              C$ {item.total.toFixed(2)}
+              {formatearMonto(item.total)}
             </Text>
           </View>
         </View>
@@ -333,10 +270,8 @@ export default function HistorialVentasScreen() {
           <View
             style={[
               styles.puntoEstado,
-              item.estado === "Pagada" &&
-                styles.puntoPagada,
-              item.estado === "Pendiente" &&
-                styles.puntoPendiente,
+              item.estado === "Pagada" && styles.puntoPagada,
+              item.estado === "Pendiente" && styles.puntoPendiente,
             ]}
           />
 
@@ -344,14 +279,10 @@ export default function HistorialVentasScreen() {
             {obtenerTextoEstado(item.estado)}
           </Text>
 
-          {item.metodoPago ===
-            "Crédito" &&
+          {item.metodoPago === "Crédito" &&
             item.saldoPendiente > 0 && (
               <Text style={styles.saldoTexto}>
-                Saldo: C${" "}
-                {item.saldoPendiente.toFixed(
-                  2
-                )}
+                Saldo: {formatearMonto(item.saldoPendiente)}
               </Text>
             )}
         </View>
@@ -362,7 +293,6 @@ export default function HistorialVentasScreen() {
   return (
     <View style={styles.container}>
       {/* HEADER */}
-
       <View style={styles.header}>
         <TouchableOpacity
           style={styles.botonRegresar}
@@ -376,10 +306,7 @@ export default function HistorialVentasScreen() {
         </TouchableOpacity>
 
         <View style={styles.headerInfo}>
-          <Text style={styles.titulo}>
-            Historial de ventas
-          </Text>
-
+          <Text style={styles.titulo}>Historial de ventas</Text>
           <Text style={styles.subtitulo}>
             Consulta las ventas realizadas
           </Text>
@@ -398,7 +325,6 @@ export default function HistorialVentasScreen() {
       </View>
 
       {/* BUSCADOR */}
-
       <View style={styles.busqueda}>
         <Ionicons
           name="search-outline"
@@ -415,9 +341,7 @@ export default function HistorialVentasScreen() {
         />
 
         {busqueda.length > 0 && (
-          <TouchableOpacity
-            onPress={() => setBusqueda("")}
-          >
+          <TouchableOpacity onPress={() => setBusqueda("")}>
             <Ionicons
               name="close-circle"
               size={20}
@@ -428,38 +352,29 @@ export default function HistorialVentasScreen() {
       </View>
 
       {/* CONTADOR */}
-
       {!loading && (
         <View style={styles.contadorContainer}>
           <Text style={styles.contadorTexto}>
             {ventasFiltradas.length}{" "}
-            {ventasFiltradas.length === 1
-              ? "venta"
-              : "ventas"}
+            {ventasFiltradas.length === 1 ? "venta" : "ventas"}
           </Text>
 
           <Text style={styles.contadorTotal}>
-            Total: C${" "}
-            {ventasFiltradas
-              .reduce(
-                (total, venta) =>
-                  total + venta.total,
+            Total:{" "}
+            {formatearMonto(
+              ventasFiltradas.reduce(
+                (total, venta) => total + venta.total,
                 0
               )
-              .toFixed(2)}
+            )}
           </Text>
         </View>
       )}
 
       {/* LISTA */}
-
       {loading ? (
         <View style={styles.loading}>
-          <ActivityIndicator
-            size="large"
-            color="#D94F8A"
-          />
-
+          <ActivityIndicator size="large" color="#D94F8A" />
           <Text style={styles.loadingTexto}>
             Cargando ventas...
           </Text>
@@ -490,25 +405,19 @@ export default function HistorialVentasScreen() {
               </Text>
 
               <Text style={styles.vacioTexto}>
-                Las ventas que registres
-                aparecerán aquí.
+                Las ventas que registres aparecerán aquí.
               </Text>
             </View>
           }
         />
       )}
 
-      {/* =====================================================
-          MODAL DETALLE DE VENTA
-      ===================================================== */}
-
+      {/* MODAL DETALLE DE VENTA */}
       <Modal
         visible={!!ventaSeleccionada}
         animationType="slide"
         presentationStyle="fullScreen"
-        onRequestClose={() =>
-          setVentaSeleccionada(null)
-        }
+        onRequestClose={() => setVentaSeleccionada(null)}
       >
         {ventaSeleccionada && (
           <View style={styles.modalPantalla}>
@@ -519,20 +428,14 @@ export default function HistorialVentasScreen() {
                 </Text>
 
                 <Text style={styles.modalSubtitulo}>
-                  {formatearFecha(
-                    ventaSeleccionada.fechaVenta
-                  )}{" "}
-                  •{" "}
-                  {formatearHora(
-                    ventaSeleccionada.fechaVenta
-                  )}
+                  {formatearFecha(ventaSeleccionada.fechaVenta)}
+                  {" • "}
+                  {formatearHora(ventaSeleccionada.fechaVenta)}
                 </Text>
               </View>
 
               <TouchableOpacity
-                onPress={() =>
-                  setVentaSeleccionada(null)
-                }
+                onPress={() => setVentaSeleccionada(null)}
               >
                 <Ionicons
                   name="close"
@@ -544,12 +447,9 @@ export default function HistorialVentasScreen() {
 
             <ScrollView
               showsVerticalScrollIndicator={false}
-              contentContainerStyle={
-                styles.detalleContenido
-              }
+              contentContainerStyle={styles.detalleContenido}
             >
               {/* CLIENTE */}
-
               <View style={styles.detalleCard}>
                 <View style={styles.detalleTituloFila}>
                   <View style={styles.detalleIcono}>
@@ -560,41 +460,24 @@ export default function HistorialVentasScreen() {
                     />
                   </View>
 
-                  <Text
-                    style={
-                      styles.detalleTitulo
-                    }
-                  >
+                  <Text style={styles.detalleTitulo}>
                     Cliente
                   </Text>
                 </View>
 
-                <Text
-                  style={styles.detalleCliente}
-                >
+                <Text style={styles.detalleCliente}>
                   {ventaSeleccionada.clienteNombre}
                 </Text>
 
-                {ventaSeleccionada
-                  .clienteTelefono ? (
-                  <Text
-                    style={
-                      styles.detalleDato
-                    }
-                  >
-                    Teléfono:{" "}
-                    {
-                      ventaSeleccionada.clienteTelefono
-                    }
+                {ventaSeleccionada.clienteTelefono ? (
+                  <Text style={styles.detalleDato}>
+                    Teléfono: {ventaSeleccionada.clienteTelefono}
                   </Text>
                 ) : null}
               </View>
 
               {/* PRODUCTOS */}
-
-              <Text
-                style={styles.seccionTitulo}
-              >
+              <Text style={styles.seccionTitulo}>
                 Productos vendidos
               </Text>
 
@@ -605,11 +488,7 @@ export default function HistorialVentasScreen() {
                       key={`${producto.productoId}-${index}`}
                       style={styles.productoDetalle}
                     >
-                      <View
-                        style={
-                          styles.productoDetalleIcono
-                        }
-                      >
+                      <View style={styles.productoDetalleIcono}>
                         <Ionicons
                           name="shirt-outline"
                           size={22}
@@ -617,51 +496,31 @@ export default function HistorialVentasScreen() {
                         />
                       </View>
 
-                      <View
-                        style={
-                          styles.productoDetalleInfo
-                        }
-                      >
+                      <View style={styles.productoDetalleInfo}>
                         <Text
-                          style={
-                            styles.productoDetalleNombre
-                          }
+                          style={styles.productoDetalleNombre}
                           numberOfLines={2}
                         >
                           {producto.nombre}
                         </Text>
 
-                        <Text
-                          style={
-                            styles.productoDetalleCodigo
-                          }
-                        >
-                          Código:{" "}
-                          {producto.codigo}
+                        <Text style={styles.productoDetalleCodigo}>
+                          Código: {producto.codigo}
                         </Text>
 
                         <Text
-                          style={
-                            styles.productoDetalleCantidad
-                          }
+                          style={styles.productoDetalleCantidad}
                         >
-                          {producto.cantidad}{" "}
-                          × C${" "}
-                          {producto.precioUnitario.toFixed(
-                            2
-                          )}
+                          {formatearCantidad(producto.cantidad)}
+                          {" × "}
+                          {formatearMonto(producto.precioUnitario)}
                         </Text>
                       </View>
 
                       <Text
-                        style={
-                          styles.productoDetalleSubtotal
-                        }
+                        style={styles.productoDetalleSubtotal}
                       >
-                        C${" "}
-                        {producto.subtotal.toFixed(
-                          2
-                        )}
+                        {formatearMonto(producto.subtotal)}
                       </Text>
                     </View>
                   )
@@ -669,143 +528,68 @@ export default function HistorialVentasScreen() {
               </View>
 
               {/* PAGO */}
-
-              <Text
-                style={styles.seccionTitulo}
-              >
+              <Text style={styles.seccionTitulo}>
                 Información de pago
               </Text>
 
               <View style={styles.detalleCard}>
-                <View
-                  style={styles.detalleFila}
-                >
-                  <Text
-                    style={styles.detalleLabel}
-                  >
+                <View style={styles.detalleFila}>
+                  <Text style={styles.detalleLabel}>
                     Método de pago
                   </Text>
-
-                  <Text
-                    style={styles.detalleValor}
-                  >
-                    {
-                      ventaSeleccionada.metodoPago
-                    }
+                  <Text style={styles.detalleValor}>
+                    {ventaSeleccionada.metodoPago}
                   </Text>
                 </View>
 
-                <View
-                  style={styles.detalleFila}
-                >
-                  <Text
-                    style={styles.detalleLabel}
-                  >
+                <View style={styles.detalleFila}>
+                  <Text style={styles.detalleLabel}>
                     Subtotal
                   </Text>
-
-                  <Text
-                    style={styles.detalleValor}
-                  >
-                    C${" "}
-                    {ventaSeleccionada.subtotal.toFixed(
-                      2
-                    )}
+                  <Text style={styles.detalleValor}>
+                    {formatearMonto(ventaSeleccionada.subtotal)}
                   </Text>
                 </View>
 
-                <View
-                  style={styles.detalleFila}
-                >
-                  <Text
-                    style={styles.detalleLabel}
-                  >
+                <View style={styles.detalleFila}>
+                  <Text style={styles.detalleLabel}>
                     Monto pagado
                   </Text>
-
-                  <Text
-                    style={styles.detalleValor}
-                  >
-                    C${" "}
-                    {ventaSeleccionada.montoPagado.toFixed(
-                      2
-                    )}
+                  <Text style={styles.detalleValor}>
+                    {formatearMonto(ventaSeleccionada.montoPagado)}
                   </Text>
                 </View>
 
-                {ventaSeleccionada
-                  .metodoPago ===
-                  "Crédito" && (
-                  <View
-                    style={styles.detalleFila}
-                  >
-                    <Text
-                      style={
-                        styles.detalleLabel
-                      }
-                    >
+                {ventaSeleccionada.metodoPago === "Crédito" && (
+                  <View style={styles.detalleFila}>
+                    <Text style={styles.detalleLabel}>
                       Saldo pendiente
                     </Text>
-
-                    <Text
-                      style={
-                        styles.saldoDetalle
-                      }
-                    >
-                      C${" "}
-                      {ventaSeleccionada.saldoPendiente.toFixed(
-                        2
+                    <Text style={styles.saldoDetalle}>
+                      {formatearMonto(
+                        ventaSeleccionada.saldoPendiente
                       )}
                     </Text>
                   </View>
                 )}
 
-                <View
-                  style={styles.lineaDetalle}
-                />
+                <View style={styles.lineaDetalle} />
 
-                <View
-                  style={styles.totalDetalleFila}
-                >
-                  <Text
-                    style={
-                      styles.totalDetalleLabel
-                    }
-                  >
+                <View style={styles.totalDetalleFila}>
+                  <Text style={styles.totalDetalleLabel}>
                     TOTAL
                   </Text>
-
-                  <Text
-                    style={
-                      styles.totalDetalleValor
-                    }
-                  >
-                    C${" "}
-                    {ventaSeleccionada.total.toFixed(
-                      2
-                    )}
+                  <Text style={styles.totalDetalleValor}>
+                    {formatearMonto(ventaSeleccionada.total)}
                   </Text>
                 </View>
 
-                <View
-                  style={styles.estadoDetalle}
-                >
-                  <Text
-                    style={
-                      styles.estadoDetalleLabel
-                    }
-                  >
+                <View style={styles.estadoDetalle}>
+                  <Text style={styles.estadoDetalleLabel}>
                     Estado
                   </Text>
-
-                  <Text
-                    style={
-                      styles.estadoDetalleValor
-                    }
-                  >
-                    {obtenerTextoEstado(
-                      ventaSeleccionada.estado
-                    )}
+                  <Text style={styles.estadoDetalleValor}>
+                    {obtenerTextoEstado(ventaSeleccionada.estado)}
                   </Text>
                 </View>
               </View>
@@ -1077,10 +861,6 @@ const styles = StyleSheet.create({
     textAlign: "center",
     marginTop: 6,
   },
-
-  // =======================================================
-  // MODAL
-  // =======================================================
 
   modalPantalla: {
     flex: 1,
